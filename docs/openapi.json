@@ -1,0 +1,126 @@
+{
+  "paths": {
+    "/openapi/credential-probe/check": {
+      "post": {
+        "operationId": "credentialStorageProbeCheck",
+        "summary": "验证固定虚拟哨兵数据的系统身份与行级权限隔离",
+        "responses": {
+          "200": {
+            "description": "返回身份类别与固定操作结果，不返回任何记录或凭据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "phase", "roleCategory", "read", "insert", "update",
+                    "delete", "cleanup", "expectedIsolation"
+                  ],
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "enum": ["synthetic-storage-probe"],
+                      "description": "固定虚拟数据存储探针",
+                      "example": "synthetic-storage-probe"
+                    },
+                    "roleCategory": {
+                      "type": "string",
+                      "enum": ["apiKey", "system", "authenticated", "anonymous"],
+                      "description": "API Key入口类别或平台上下文身份，不代表SQL角色查询",
+                      "example": "apiKey"
+                    },
+                    "read": {
+                      "type": "string",
+                      "enum": ["allowed", "denied", "error"],
+                      "description": "固定种子的读取结果",
+                      "example": "allowed"
+                    },
+                    "insert": {
+                      "type": "string",
+                      "enum": ["allowed", "denied", "error"],
+                      "description": "固定额外哨兵的插入结果",
+                      "example": "allowed"
+                    },
+                    "update": {
+                      "type": "string",
+                      "enum": ["allowed", "denied", "error"],
+                      "description": "固定种子的更新结果",
+                      "example": "allowed"
+                    },
+                    "delete": {
+                      "type": "string",
+                      "enum": ["allowed", "denied", "error"],
+                      "description": "固定种子的删除结果，成功后恢复种子",
+                      "example": "allowed"
+                    },
+                    "cleanup": {
+                      "type": "string",
+                      "enum": ["complete", "notNeeded", "error"],
+                      "description": "恢复固定种子与清理额外哨兵的结果",
+                      "example": "complete"
+                    },
+                    "expectedIsolation": {
+                      "type": "boolean",
+                      "description": "四项操作是否符合当前身份的预期且清理未失败",
+                      "example": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "固定探针不接受任何查询参数或非空请求体" },
+          "503": { "description": "同一服务实例已有探针执行，请按顺序测试" }
+        }
+      }
+    },
+    "/openapi/connector-auth-storage/execute": {
+      "post": {
+        "operationId": "connectorAuthStorageExecute",
+        "summary": "执行仅服务端可调用的加密授权记录存储操作",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["sealed"],
+                "additionalProperties": false,
+                "properties": {
+                  "sealed": {
+                    "type": "string",
+                    "maxLength": 70000,
+                    "description": "有时间限制、经AES256GCM认证加密的内部命令封装",
+                    "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "经过认证加密并绑定本次请求的响应，包含内部操作结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["sealed"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "sealed": {
+                      "type": "string",
+                      "description": "绑定本次请求摘要的AES256GCM响应封装",
+                      "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": { "description": "平台网关拒绝缺失、失效或超出路由范围的API Key" },
+          "503": { "description": "授权存储暂不可用，响应不含凭据、SQL或底层错误" }
+        }
+      }
+    }
+  }
+}

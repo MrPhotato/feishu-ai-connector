@@ -1,0 +1,31 @@
+{
+  "scopes": {
+    "tenant": [],
+    "user": [
+      "search:message",
+      "im:message:readonly",
+      "im:message.p2p_msg:get_as_user",
+      "im:message.group_msg:get_as_user",
+      "docx:document:readonly",
+      "search:docs:read",
+      "offline_access",
+      "contact:user.base:readonly",
+      "im:message",
+      "im:message.send_as_user",
+      "docx:document:create",
+      "docx:document:write_only",
+      "space:document:retrieve",
+      "space:folder:create",
+      "wiki:node:read",
+      "calendar:calendar:read",
+      "calendar:calendar.event:read",
+      "calendar:calendar.event:create",
+      "calendar:calendar.event:update",
+      "calendar:calendar.event:delete",
+      "task:task:write",
+      "sheets:spreadsheet",
+      "bitable:app",
+      "contact:user:search"
+    ]
+  }
+}

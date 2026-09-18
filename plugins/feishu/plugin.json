@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "feishu",
+  "version": "0.3.0",
+  "description": "通过本人飞书授权检索资料、阅读上下文并执行明确授权的操作。",
+  "author": { "name": "Connector maintainer" },
+  "keywords": ["feishu", "lark", "messages", "documents", "mail"]
+}

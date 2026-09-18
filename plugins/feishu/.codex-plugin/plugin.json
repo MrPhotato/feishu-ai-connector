@@ -1,0 +1,19 @@
+{
+  "name": "feishu",
+  "version": "0.3.0",
+  "description": "通过本人飞书授权检索资料、阅读上下文并执行明确授权的操作。",
+  "author": {
+    "name": "Connector maintainer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "飞书 AI 连接器模板",
+    "shortDescription": "按本人授权查找飞书资料并处理工作。",
+    "longDescription": "将按领域加载的操作策略与远程 MCP 工具打包。常用检索直接调用；更多能力按需查询官方操作。新版本须完成服务端部署和插件安装验收后使用。",
+    "developerName": "Connector maintainer",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["整理这周我在飞书中推进的工作，并保留来源。", "查找与项目有关的文档，读取正文后说明结论。", "查找指定邮件并准备回复草稿。"]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,3 @@
+test-output/
+vendor/*
+!vendor/lark-cli-1.0.95-linux-amd64.tar.gz

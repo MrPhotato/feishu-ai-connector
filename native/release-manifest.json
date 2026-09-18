@@ -1,0 +1,29 @@
+{
+  "package": "@larksuite/cli",
+  "version": "1.0.95",
+  "repository": "https://github.com/larksuite/cli",
+  "sourceTag": "v1.0.95",
+  "checksumSource": "@larksuite/cli@1.0.95/checksums.txt",
+  "assets": [
+    {
+      "platform": "linux", "arch": "x64", "entry": "lark-cli",
+      "archive": "lark-cli-1.0.95-linux-amd64.tar.gz",
+      "sha256": "7da92d426b7d000908c76a36b87a7d0357c270debf4c7149bbc6010b20d2541e"
+    },
+    {
+      "platform": "linux", "arch": "arm64", "entry": "lark-cli",
+      "archive": "lark-cli-1.0.95-linux-arm64.tar.gz",
+      "sha256": "063012a63bb22479855e335d922cc588b883e00d115de51da76a8ffe22db987a"
+    },
+    {
+      "platform": "win32", "arch": "x64", "entry": "lark-cli.exe",
+      "archive": "lark-cli-1.0.95-windows-amd64.zip",
+      "sha256": "f2d5c3d6316b19ceec0996871ca4cff89541b82ed0d90220b3643ee0e84890a8"
+    },
+    {
+      "platform": "win32", "arch": "arm64", "entry": "lark-cli.exe",
+      "archive": "lark-cli-1.0.95-windows-arm64.zip",
+      "sha256": "61df77e3692b304959de43950c1b3337ce3d08aef09f73ca936d3afd4e536b0f"
+    }
+  ]
+}

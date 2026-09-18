@@ -1,0 +1,8 @@
+{
+  "miaodaAppId": "app_example",
+  "publicUrl": "https://your-tenant.feishuapp.com/app/app_example",
+  "feishuAppId": "cli_example00000000",
+  "defaultTimezone": "Asia/Singapore",
+  "displayName": "飞书 AI 连接器",
+  "author": "Connector maintainer"
+}
