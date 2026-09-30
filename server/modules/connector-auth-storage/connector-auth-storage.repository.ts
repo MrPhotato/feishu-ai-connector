@@ -1,14 +1,18 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DATABASE, type PostgresJsDatabase } from '@lark-apaas/fullstack-nestjs-core';
-import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { connectorAuthRecord } from '@server/database/schema';
 import type { ConnectorAuthStorageResponse } from '@shared/api.interface';
 import { ConnectorAuthStorageCrypto } from './connector-auth-storage.crypto';
-import { storagePayloadSchema, type StorageCommand } from './connector-auth-storage.contract';
+import {
+  storageCommandSchema, storagePayloadSchema, validateStorageJson, type StorageCommand,
+} from './connector-auth-storage.contract';
 
 type AuthRecord = typeof connectorAuthRecord.$inferSelect;
+type NewAuthRecord = typeof connectorAuthRecord.$inferInsert;
 type PutCommand = Extract<StorageCommand, { operation: 'put' }>;
+type GetCommand = Extract<StorageCommand, { operation: 'get' }>;
 const REVOCATION_MODEL: string = 'GrantRevocation';
 const LEASE_MODEL: string = 'RefreshLease';
 
@@ -40,6 +44,90 @@ class ConnectorAuthStorageRepository {
     }
   }
 
+  async executeFileBatch(commands: StorageCommand[]): Promise<ConnectorAuthStorageResponse[]> {
+    // Defend this boundary independently of the HTTP envelope/controller. Never batch OAuth state changes.
+    if (!Array.isArray(commands) || commands.length < 1 || commands.length > 8) {
+      throw new Error('Storage request rejected.');
+    }
+    const parsed: Array<GetCommand | PutCommand> = commands.map((command: StorageCommand): GetCommand | PutCommand => {
+      validateStorageJson(command);
+      const result = storageCommandSchema.safeParse(command);
+      if (!result.success || (result.data.operation !== 'get' && result.data.operation !== 'put') ||
+        result.data.model !== 'FeishuFileChunk') throw new Error('Storage request rejected.');
+      return result.data;
+    });
+    const first: GetCommand | PutCommand = parsed[0];
+    if (parsed.some((command: GetCommand | PutCommand): boolean => command.operation !== first.operation) ||
+      new Set(parsed.map((command: GetCommand | PutCommand): string => command.key)).size !== parsed.length) {
+      throw new Error('Storage request rejected.');
+    }
+    if (first.operation === 'get') return this.getFileBatch(parsed.map((command: GetCommand | PutCommand): string => command.key));
+    const puts: PutCommand[] = parsed.filter((command: GetCommand | PutCommand): command is PutCommand => command.operation === 'put');
+    await this.putFileBatch(puts);
+    return puts.map((): ConnectorAuthStorageResponse => ({ ok: true }));
+  }
+
+  private async getFileBatch(keys: string[]): Promise<ConnectorAuthStorageResponse[]> {
+    const hashes: string[] = keys.map((key: string): string => this.crypto.hash('key', 'FeishuFileChunk', key));
+    const rows: AuthRecord[] = await this.db.select().from(connectorAuthRecord).where(and(
+      eq(connectorAuthRecord.model, 'FeishuFileChunk'), inArray(connectorAuthRecord.keyHash, hashes),
+      gt(connectorAuthRecord.expiresAt, new Date()),
+    ));
+    const grantHashes: string[] = [...new Set(rows.map((row: AuthRecord): string | null => row.grantHash)
+      .filter((hash: string | null): hash is string => hash !== null))];
+    const revoked: Array<{ keyHash: string }> = grantHashes.length ? await this.db.select({ keyHash: connectorAuthRecord.keyHash })
+      .from(connectorAuthRecord).where(and(eq(connectorAuthRecord.model, REVOCATION_MODEL),
+        inArray(connectorAuthRecord.keyHash, grantHashes))) : [];
+    const revokedHashes: Set<string> = new Set(revoked.map((row: { keyHash: string }): string => row.keyHash));
+    const byHash: Map<string, AuthRecord> = new Map(rows.map((row: AuthRecord): [string, AuthRecord] => [row.keyHash, row]));
+    return hashes.map((hash: string): ConnectorAuthStorageResponse => {
+      const row: AuthRecord | undefined = byHash.get(hash);
+      // Recheck expiry after the revocation query, which itself may have waited on the database.
+      const allowed: boolean = !!row && row.expiresAt.getTime() > Date.now() &&
+        (!row.grantHash || !revokedHashes.has(row.grantHash));
+      return { ok: true, record: allowed && row ? this.decodePayload(row) : undefined };
+    });
+  }
+
+  private async putFileBatch(commands: PutCommand[]): Promise<void> {
+    let binding: { uidHash: string | null; grantHash: string } | undefined;
+    const values: NewAuthRecord[] = commands.map((command: PutCommand): NewAuthRecord => {
+      const keyHash: string = this.crypto.hash('key', command.model, command.key);
+      const uid: string | undefined = this.resolveIndex(command.uid, command.payload.uid);
+      const grantId: string | undefined = this.resolveIndex(command.grantId, command.payload.grantId);
+      if (!grantId) throw new Error('Storage request rejected.');
+      const uidHash: string | null = uid ? this.crypto.hash('uid', command.model, uid) : null;
+      const grantHash: string = this.crypto.hash('grant', grantId);
+      if (binding && (binding.uidHash !== uidHash || binding.grantHash !== grantHash)) {
+        throw new Error('Storage request rejected.');
+      }
+      binding ??= { uidHash, grantHash };
+      const payload: Record<string, unknown> = { ...command.payload };
+      delete payload.consumed;
+      return { model: command.model, keyHash, uidHash, grantHash,
+        payloadCiphertext: this.crypto.seal(payload, this.crypto.recordAad(command.model, keyHash)),
+        expiresAt: new Date(command.expiresAt * 1000) };
+    });
+    if (!binding) throw new Error('Storage request rejected.');
+    const { uidHash, grantHash } = binding;
+    if (await this.isRevoked(grantHash)) throw new Error('Storage operation unavailable.');
+    const rows: Array<{ id: string }> = await this.db.insert(connectorAuthRecord).values(values).onConflictDoUpdate({
+      target: [connectorAuthRecord.model, connectorAuthRecord.keyHash],
+      // Each excluded value remains encrypted with its own model/key AAD. Never reset consumedAt or bindings.
+      set: { payloadCiphertext: sql`excluded.payload_ciphertext`, expiresAt: sql`excluded.expires_at`, updatedAt: new Date() },
+      setWhere: and(uidHash ? eq(connectorAuthRecord.uidHash, uidHash) : isNull(connectorAuthRecord.uidHash),
+        eq(connectorAuthRecord.grantHash, grantHash)),
+    }).returning({ id: connectorAuthRecord.id });
+    // A racing revoke cannot resurrect usable chunks, including when some conflicting rows were rejected.
+    if (await this.isRevoked(grantHash)) {
+      await this.db.delete(connectorAuthRecord).where(and(eq(connectorAuthRecord.model, 'FeishuFileChunk'),
+        eq(connectorAuthRecord.grantHash, grantHash),
+        inArray(connectorAuthRecord.keyHash, values.map((value: NewAuthRecord): string => value.keyHash))));
+      throw new Error('Storage operation unavailable.');
+    }
+    if (rows.length !== commands.length) throw new Error('Storage operation unavailable.');
+  }
+
   private async get(model: string, key: string): Promise<Record<string, unknown> | undefined> {
     const keyHash: string = this.crypto.hash('key', model, key);
     const rows: AuthRecord[] = await this.db.select().from(connectorAuthRecord)
@@ -59,6 +147,10 @@ class ConnectorAuthStorageRepository {
 
   private async decode(row: AuthRecord | undefined): Promise<Record<string, unknown> | undefined> {
     if (!row || await this.isRevoked(row.grantHash)) return undefined;
+    return this.decodePayload(row);
+  }
+
+  private decodePayload(row: AuthRecord): Record<string, unknown> {
     const payload: Record<string, unknown> = storagePayloadSchema.parse(
       this.crypto.open(row.payloadCiphertext, this.crypto.recordAad(row.model, row.keyHash)),
     );

@@ -3,11 +3,13 @@ import { Logger } from '@nestjs/common';
 type DiagnosticWriter = (message: string) => void;
 const logger: Logger = new Logger('ConnectorAuthDiagnostics');
 const operations: readonly string[] = ['get', 'put', 'consume', 'remove', 'revokeGrant', 'findUid',
-  'acquireLease', 'releaseLease'];
+  'acquireLease', 'releaseLease', 'getFileChunks', 'putFileChunks'];
 const models: readonly string[] = ['AccessToken', 'AuthorizationCode', 'ClientCredentials', 'DeviceCode',
   'Grant', 'IdToken', 'Interaction', 'RefreshToken', 'Session', 'ReplayDetection',
   'PushedAuthorizationRequest', 'BackchannelAuthenticationRequest', 'FeishuAccount', 'FeishuState',
-  'Consent', 'FeishuLoginState', 'FeishuLoginResult', 'ConsentCSRF', 'FeishuAction'];
+  'Consent', 'FeishuLoginState', 'FeishuLoginResult', 'ConsentCSRF', 'FeishuAction', 'FeishuFile', 'FeishuFileChunk'];
+const storageFailureReasons = ['validation', 'config', 'http', 'network_timeout', 'network', 'response_invalid'] as const;
+export type ConnectorStorageFailureReason = typeof storageFailureReasons[number];
 const callbackStages: readonly string[] = ['state', 'code', 'token_exchange', 'token_fields',
   'user_info', 'account_binding', 'handoff', 'denied', 'complete'];
 
@@ -52,10 +54,18 @@ export class ConnectorAuthDiagnostics {
     this.emit(value);
   }
 
-  storage(operation: unknown, model: unknown, ok: boolean, durationMs: number): void {
-    this.emit({ event: 'connector_auth_storage', operation: typeof operation === 'string' &&
+  storage(operation: unknown, model: unknown, ok: boolean, durationMs: number,
+    failureReason?: unknown, upstreamStatus?: unknown, batchSize?: unknown): void {
+    const value: Record<string, string | number | boolean> = { event: 'connector_auth_storage', operation: typeof operation === 'string' &&
       operations.includes(operation) ? operation : 'other', model: typeof model === 'string' &&
-      models.includes(model) ? model : 'none', ok, durationMs: milliseconds(durationMs) });
+      models.includes(model) ? model : 'none', ok, durationMs: milliseconds(durationMs) };
+    if (!ok && typeof failureReason === 'string' && storageFailureReasons.some(
+      (reason): boolean => reason === failureReason)) value.failureReason = failureReason;
+    if (upstreamStatus !== undefined) value.upstreamStatus = typeof upstreamStatus === 'number' &&
+      Number.isInteger(upstreamStatus) && upstreamStatus >= 100 && upstreamStatus <= 599 ? upstreamStatus : 0;
+    if (batchSize !== undefined) value.batchSize = typeof batchSize === 'number' &&
+      Number.isInteger(batchSize) && batchSize >= 1 && batchSize <= 8 ? batchSize : 0;
+    this.emit(value);
   }
 }
 

@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { feishuAttachmentDiagnostics } from './feishu-attachment.diagnostics';
 import type { FeishuToolResult } from '@shared/api.interface';
 import type { FeishuCliOptions, FeishuCliReply } from './feishu-cli.runner';
 import type { FeishuCliOutputFile } from './feishu-cli.files';
@@ -218,19 +219,29 @@ async function executeAttachmentDownload(plan: AttachmentPlan, run: AttachmentRu
       JSON.stringify(plan.scopeGroups) !== JSON.stringify(canonical.scopeGroups)) throw new Error('invalid_plan');
   } catch { return failure('attachment_request_invalid', '附件下载请求无效。'); }
   let reply: FeishuCliReply;
+  const started: number = performance.now();
   try { reply = await run(canonical.argv, { collectFiles: canonical.collectFiles }); }
   catch (error: unknown) {
+    feishuAttachmentDiagnostics.stage(canonical.source, 'cli', false, performance.now() - started,
+      error instanceof Error ? error.message : undefined);
     return error instanceof Error && error.message === 'cli_timeout'
       ? failure('attachment_timeout', canonical.source === 'docx'
         ? '本次文档导出等待超时，未确认下载完成；请先查询导出状态，不要盲目重复导出。'
         : '附件下载超时，未确认下载完成。')
       : failure('attachment_download_failed', '附件下载未完成，请核对文件权限、大小及连接状态。');
   }
+  const cliOk: boolean = reply.exitCode === 0 && object(reply.output) && reply.output.ok === true;
+  feishuAttachmentDiagnostics.stage(canonical.source, 'cli', cliOk, performance.now() - started,
+    cliOk ? 'none' : 'cli_operation_failed', reply.exitCode, reply.output);
   if (reply.exitCode !== 0 || !object(reply.output) || reply.output.ok !== true) {
     return failure('cli_operation_failed', '官方飞书 CLI 未确认附件操作成功，请核对权限与来源。');
   }
-  return canonical.request.source === 'mail'
+  const validationStarted: number = performance.now();
+  const result: FeishuToolResult = canonical.request.source === 'mail'
     ? mailResult(canonical.request, reply.output.data) : binaryResult(canonical.request, reply);
+  feishuAttachmentDiagnostics.stage(canonical.source, 'result_validation', result.ok,
+    performance.now() - validationStarted, result.error?.code ?? 'none');
+  return result;
 }
 
 export { attachmentDownloadSchema, buildAttachmentPlan, executeAttachmentDownload };

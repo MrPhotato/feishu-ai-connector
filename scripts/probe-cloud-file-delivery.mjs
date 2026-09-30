@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { Logger } from '@nestjs/common';
 import { loadDeploymentConfig, assertCompatibleCloudIdentity } from './lib/deployment-config.mjs';
 import { readCloudEnvironment } from './lib/deployment-platform.mjs';
 
@@ -19,6 +20,19 @@ environment.length = 0;
 process.env.CONNECTOR_PUBLIC_URL = deployment.publicUrl;
 delete process.env.CONNECTOR_DEPLOYMENT_CONFIG;
 const require = createRequire(import.meta.url);
+const requestedBytes = process.argv[2] === undefined ? 90_000 : Number(process.argv[2]);
+assert.ok(Number.isSafeInteger(requestedBytes) && requestedBytes > 0 && requestedBytes <= 10 * 1024 * 1024);
+const storageFailures = new Map();
+const originalLog = Logger.prototype.log;
+Logger.prototype.log = function (message) {
+  try {
+    const row = JSON.parse(message);
+    if (row.event === 'connector_auth_storage' && row.ok === false) {
+      const key = `${row.failureReason ?? 'unknown'}:${row.upstreamStatus ?? 0}`;
+      storageFailures.set(key, (storageFailures.get(key) ?? 0) + 1);
+    }
+  } catch { /* Diagnostic payloads are not forwarded. */ }
+};
 const { ConnectorAuthStorageCrypto } = require('../dist/server/modules/connector-auth-storage/connector-auth-storage.crypto.js');
 const { ConnectorAuthStorageService } = require('../dist/server/modules/connector-auth-storage/connector-auth-storage.service.js');
 const { publishFile } = require('../dist/server/modules/feishu-tools/feishu-file-delivery.js');
@@ -30,6 +44,9 @@ const expiry = Math.floor(Date.now() / 1000) + 900;
 const resource = `${deployment.publicUrl}/mcp`;
 let phase = 'prepare';
 let checks = 0;
+const started = performance.now();
+let publishDurationMs = 0;
+let downloadStatus = 0;
 try {
   await store.put('FeishuAccount', principal.accountId, { tenant_key: 'synthetic-files', open_id: suffix }, expiry);
   await store.put('Grant', principal.grantId, { accountId: principal.accountId, clientId: principal.clientId,
@@ -37,14 +54,16 @@ try {
   await store.put('Consent', principal.grantId, { accountId: principal.accountId, grantId: principal.grantId,
     clientId: principal.clientId, resource, scopes: principal.scopes, expiresAt: expiry }, expiry);
   phase = 'publish';
-  const bytes = Buffer.from('Synthetic connector attachment verification.\n'.repeat(2000));
+  const bytes = Buffer.alloc(requestedBytes, 37);
   const expectedHash = createHash('sha256').update(bytes).digest('hex');
   const link = await publishFile(store, principal, { name: 'synthetic-check.txt', mimeType: 'text/plain',
     byteLength: bytes.length, dataBase64: bytes.toString('base64') });
+  publishDurationMs = Math.round(performance.now() - started);
   assert.equal(link.byteLength, bytes.length); checks++;
   assert.equal(new URL(link.downloadUrl).origin, new URL(resource).origin); checks++;
   phase = 'http-download';
-  const reply = await fetch(link.downloadUrl, { redirect: 'error', signal: AbortSignal.timeout(25000) });
+  const reply = await fetch(link.downloadUrl, { redirect: 'error', signal: AbortSignal.timeout(100000) });
+  downloadStatus = reply.status;
   assert.equal(reply.status, 200); checks++;
   assert.equal(reply.headers.get('cache-control'), 'no-store'); checks++;
   assert.equal(reply.headers.get('referrer-policy'), 'no-referrer'); checks++;
@@ -59,9 +78,14 @@ try {
   assert.equal(denied.status, 410); checks++;
   assert.equal((await denied.text()).includes(bytes.subarray(0, 20).toString()), false); checks++;
   console.log(JSON.stringify({ ok: true, checks, byteLength: bytes.length, realBusinessData: false,
+    durationMs: Math.round(performance.now() - started), publishDurationMs, downloadStatus,
+    storageFailures: Object.fromEntries(storageFailures),
     delivery: 'cloud encrypted storage -> anonymous capability URL -> revoke -> HTTP 410' }));
 } catch {
   console.error(`Cloud file delivery verification failed at ${phase}; private values withheld.`);
+  console.error(JSON.stringify({ byteLength: requestedBytes, durationMs: Math.round(performance.now() - started),
+    publishDurationMs, downloadStatus,
+    storageFailures: Object.fromEntries(storageFailures) }));
   process.exitCode = 1;
 } finally {
   try {
@@ -69,4 +93,5 @@ try {
     await store.revokeGrant(principal.grantId);
     await store.remove('FeishuAccount', principal.accountId);
   } catch { console.error('Synthetic file cleanup needs a later TTL cleanup.'); process.exitCode = 1; }
+  Logger.prototype.log = originalLog;
 }

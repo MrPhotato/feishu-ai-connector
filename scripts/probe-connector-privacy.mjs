@@ -77,8 +77,13 @@ app.get('/interaction/:uid/finish', handle((req, res) => {
   res.status(400).type('text/html').send(`<html>${sensitive.result}</html>`);
 }));
 app.post('/openapi/connector-auth-storage/execute', handle((req, res) => {
-  assert.equal(req.body.sealed, sensitive.sealed);
-  res.status(200).json({ sealed: sensitive.result });
+  if (Array.isArray(req.body.sealed)) {
+    assert.deepEqual(req.body.sealed, [sensitive.sealed]);
+    res.status(200).json({ sealed: [sensitive.result] });
+  } else {
+    assert.equal(req.body.sealed, sensitive.sealed);
+    res.status(200).json({ sealed: sensitive.result });
+  }
 }));
 app.post('/mcp', handle((req, res) => {
   assert.equal(req.body.params.query, sensitive.query);
@@ -122,6 +127,12 @@ try {
       });
       assert.equal(storage.status, 200);
       assert.equal((await storage.json()).sealed, sensitive.result);
+      const files = await fetch(`${base}/openapi/connector-auth-storage/execute`, {
+        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sealed: [sensitive.sealed] }),
+      });
+      assert.equal(files.status, 200);
+      assert.deepEqual((await files.json()).sealed, [sensitive.result]);
       const mcp = await fetch(`${base}/mcp`, {
         method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { query: sensitive.query } }),
@@ -135,7 +146,7 @@ try {
       assert.equal(failure.status, 503);
     }
   }
-  assert.equal(requests.length, 20);
+  assert.equal(requests.length, 24);
   assert.equal(captured.length > 40, true);
   const serialized = JSON.stringify({ captured, requests });
   assert.equal(serialized.includes(marker), false, 'Private marker reached the SDK log sink.');

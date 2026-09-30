@@ -13,12 +13,16 @@ globalThis.fetch = async () => { throw new Error('Network forbidden.'); };
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const requireDependency = createRequire(import.meta.url);
 const source = path.join(root, 'server/modules/feishu-tools/feishu-attachments.ts');
-const compiled = ts.transpileModule(fs.readFileSync(source, 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
-}).outputText;
-const module = { exports: {} };
-new Function('require', 'module', 'exports', compiled)(requireDependency, module, module.exports);
-const { attachmentDownloadSchema, buildAttachmentPlan, executeAttachmentDownload } = module.exports;
+function load(file) {
+  const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  }).outputText;
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', compiled)((name) => name.startsWith('.')
+    ? load(path.resolve(path.dirname(file), `${name}.ts`)) : requireDependency(name), module, module.exports);
+  return module.exports;
+}
+const { attachmentDownloadSchema, buildAttachmentPlan, executeAttachmentDownload } = load(source);
 let checks = 0;
 const check = (condition, label) => { assert.ok(condition, label); checks++; };
 const flag = (plan, name) => plan.argv[plan.argv.indexOf(name) + 1];

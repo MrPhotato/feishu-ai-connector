@@ -77,6 +77,72 @@ await assert.rejects(retrieveFile(store, ticket), /file_delivery_invalid/);
 map.set(chunkKey, { ...chunk, data: Buffer.alloc(24576, 99).toString('base64') });
 await assert.rejects(retrieveFile(store, ticket), /file_delivery_invalid/);
 map.set(chunkKey, chunk);
+
+// Hold a real async chunk read after it captured valid data, then change authorization before it completes.
+// This models an already-started relay response arriving after revocation, without relying on chunk deletion.
+const authorizationKeys = ['FeishuAccount:tenant:ou_synthetic', 'Grant:grant_synthetic', 'Consent:grant_synthetic'];
+const authorizationSnapshot = authorizationKeys.map((key) => [key, structuredClone(map.get(key))]);
+const realNow = Date.now;
+for (const [label, mutate] of [
+  ['account revoked', () => map.set(authorizationKeys[0], { ...map.get(authorizationKeys[0]), revoked: true })],
+  ['account identity changed', () => map.set(authorizationKeys[0], { ...map.get(authorizationKeys[0]), open_id: 'other' })],
+  ['grant revoked', () => map.delete(authorizationKeys[1])],
+  ['grant client changed', () => map.set(authorizationKeys[1], { ...map.get(authorizationKeys[1]), clientId: 'other' })],
+  ['grant scope removed', () => map.set(authorizationKeys[1], { ...map.get(authorizationKeys[1]),
+    resources: { 'https://connector.example.test/mcp': 'feishu.write' } })],
+  ['grant expired', () => map.set(authorizationKeys[1], { ...map.get(authorizationKeys[1]), exp: 1 })],
+  ['consent withdrawn', () => map.delete(authorizationKeys[2])],
+  ['consent account changed', () => map.set(authorizationKeys[2], { ...map.get(authorizationKeys[2]), accountId: 'other' })],
+  ['consent scope removed', () => map.set(authorizationKeys[2], { ...map.get(authorizationKeys[2]), scopes: [] })],
+  ['consent expired', () => map.set(authorizationKeys[2], { ...map.get(authorizationKeys[2]), expiresAt: 1 })],
+  ['ticket expired', () => { Date.now = () => original.expiresAt * 1000; }],
+]) {
+  const started = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  let returned = false;
+  const retrieval = retrieveFile({ ...store, async get(model, key) {
+    const captured = await store.get(model, key);
+    if (model === 'FeishuFileChunk' && key === `${ticket}:0`) {
+      started.resolve();
+      await resume.promise;
+    }
+    return captured;
+  } }, ticket).then((result) => { returned = true; return result; });
+  try {
+    await started.promise;
+    assert.equal(returned, false, `${label}: download is still pending`);
+    mutate();
+    resume.resolve();
+    assert.equal(await retrieval, undefined, `${label}: no bytes released after authorization changed`);
+  } finally {
+    resume.resolve();
+    Date.now = realNow;
+    for (const [key, value] of authorizationSnapshot) map.set(key, structuredClone(value));
+  }
+}
+
+// Expiry must also be checked after the final authorization reads, not just before awaiting them.
+const finalAuthorizationStarted = Promise.withResolvers();
+const finalAuthorizationResume = Promise.withResolvers();
+let consentReads = 0;
+const finalAuthorization = retrieveFile({ ...store, async get(model, key) {
+  const captured = await store.get(model, key);
+  if (model === 'Consent' && ++consentReads === 2) {
+    finalAuthorizationStarted.resolve();
+    await finalAuthorizationResume.promise;
+  }
+  return captured;
+} }, ticket);
+try {
+  await finalAuthorizationStarted.promise;
+  Date.now = () => original.expiresAt * 1000;
+  finalAuthorizationResume.resolve();
+  assert.equal(await finalAuthorization, undefined, 'ticket expiry during final authorization read denies download');
+} finally {
+  finalAuthorizationResume.resolve();
+  Date.now = realNow;
+}
+assert.deepEqual((await retrieveFile(store, ticket)).bytes, bytes, 'unchanged authorization still permits download');
 await assert.rejects(publishFile(store, { ...principal, grantId: undefined }, file), /file_delivery_invalid/);
 await assert.rejects(publishFile(store, principal, { ...file, byteLength: 2 }), /file_delivery_invalid/);
 const failingMap = new Map();
@@ -96,6 +162,113 @@ assert.equal([...delayedMap.keys()].some((key) => key.startsWith('FeishuFile:'))
 for (const resolve of delayedWrites) resolve();
 await delayedPublish;
 assert.equal([...delayedMap.keys()].at(-1).startsWith('FeishuFile:'), true, 'manifest is committed only after every chunk');
+
+// A failed worker stops new chunks, but the caller waits for already-started writes to finish.
+const largeBytes = Buffer.alloc(7_563_270, 37);
+const largeFile = { ...file, dataBase64: largeBytes.toString('base64'), byteLength: largeBytes.length };
+const pendingWrites = [];
+let startedWrites = 0;
+let failureReturned = false;
+const drainedFailure = publishFile({ ...store, async put(model) {
+  assert.equal(model, 'FeishuFileChunk', 'no manifest after failed transfer');
+  if (++startedWrites === 1) throw new Error('private backend detail');
+  await new Promise((resolve) => pendingWrites.push(resolve));
+} }, principal, largeFile).then(() => assert.fail('must reject'), (error) => {
+  failureReturned = true; assert.equal(error.message, 'file_delivery_unavailable');
+});
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(startedWrites, 4, 'bounded concurrency');
+assert.equal(failureReturned, false, 'do not return while a write remains active');
+for (const resolve of pendingWrites) resolve();
+await drainedFailure;
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(startedWrites, 4, 'no background continuation after failure');
+
+const recovered = loader({ 'node:timers/promises': { setTimeout: async () => {} } })
+  ('server/modules/feishu-tools/feishu-file-delivery.ts');
+const attempts = new Map();
+const immutable = new Map();
+const transient = (status) => Object.assign(new Error('private upstream detail'),
+  { failureReason: 'http', upstreamStatus: status });
+const recoveredLink = await recovered.publishFile({ ...store, async put(model, key, payload, expiresAt) {
+  const identity = `${model}:${key}`;
+  const serialized = JSON.stringify({ payload, expiresAt });
+  if (immutable.has(identity)) assert.equal(serialized, immutable.get(identity), 'retry preserves key/payload/absolute expiry');
+  immutable.set(identity, serialized);
+  const attempt = (attempts.get(identity) ?? 0) + 1;
+  attempts.set(identity, attempt);
+  // Includes a lost acknowledgement: the same immutable file record may already be written.
+  await store.put(model, key, payload, expiresAt);
+  if (attempt === 1) throw transient(model === 'FeishuFile' ? 503 : 429);
+} }, principal, file);
+assert.ok([...attempts.values()].every((attempt) => attempt === 2));
+let reads = 0;
+const recoveredTicket = new URL(recoveredLink.downloadUrl).searchParams.get('ticket');
+assert.deepEqual((await recovered.retrieveFile({ ...store, async get(model, key) {
+  if (model === 'FeishuFile' && ++reads === 1) throw transient(429);
+  return store.get(model, key);
+} }, recoveredTicket)).bytes, bytes);
+assert.equal(reads, 2);
+for (const status of [400, 401, 403]) {
+  let puts = 0;
+  await assert.rejects(recovered.publishFile({ ...store, async put() { puts++; throw transient(status); } },
+    principal, { ...file, byteLength: 1, dataBase64: 'eA==' }), /file_delivery_unavailable/);
+  assert.equal(puts, 1, 'permanent HTTP failure is not retried');
+}
+let cappedAttempts = 0;
+await assert.rejects(recovered.publishFile({ ...store, async put() { cappedAttempts++; throw transient(503); } },
+  principal, { ...file, byteLength: 1, dataBase64: 'eA==' }), /file_delivery_unavailable/);
+assert.equal(cappedAttempts, 3, 'bounded retries only');
+
+// The deployed relay batches eight individually encrypted chunks per HTTP request.
+const batchWaits = [];
+const batched = loader({ 'node:timers/promises': { setTimeout: async (ms) => { batchWaits.push(ms); } } })
+  ('server/modules/feishu-tools/feishu-file-delivery.ts');
+let putBatches = 0;
+let getBatches = 0;
+const batchStore = { ...store,
+  async putFileChunks(entries) {
+    putBatches++;
+    assert(entries.length >= 1 && entries.length <= 8);
+    for (const entry of entries) await store.put('FeishuFileChunk', entry.key, entry.payload, entry.expiresAt);
+  },
+  async getFileChunks(keys) {
+    getBatches++;
+    assert(keys.length >= 1 && keys.length <= 8);
+    return Promise.all(keys.map((key) => store.get('FeishuFileChunk', key)));
+  },
+  async put(model, ...args) { assert.notEqual(model, 'FeishuFileChunk'); await store.put(model, ...args); },
+  async get(model, ...args) { assert.notEqual(model, 'FeishuFileChunk'); return store.get(model, ...args); },
+};
+const batchLink = await batched.publishFile(batchStore, principal, largeFile);
+const batchTicket = new URL(batchLink.downloadUrl).searchParams.get('ticket');
+assert.deepEqual((await batched.retrieveFile(batchStore, batchTicket)).bytes, largeBytes);
+assert.equal(putBatches, 39, '308 chunks use only 39 batch HTTP writes');
+assert.equal(getBatches, 39, '308 chunks use only 39 batch HTTP reads');
+assert(batchWaits.some((ms) => ms >= 250), 'file batches reserve paced request slots');
+await assert.rejects(batched.retrieveFile({ ...batchStore, async getFileChunks() { return []; } }, batchTicket),
+  /file_delivery_invalid/, 'incomplete batch cannot release file bytes');
+let batchAttempts = 0;
+let originalBatch;
+await batched.publishFile({ ...batchStore, async putFileChunks(entries) {
+  if (originalBatch) assert.deepEqual(entries, originalBatch, 'batch retry is identical');
+  else originalBatch = structuredClone(entries);
+  await batchStore.putFileChunks(entries);
+  if (++batchAttempts === 1) throw transient(429);
+} }, principal, file);
+assert.equal(batchAttempts, 2);
+let revokeBatch;
+const revokingDownload = batched.retrieveFile({ ...batchStore, async getFileChunks(keys) {
+  const rows = await batchStore.getFileChunks(keys);
+  if (!revokeBatch) await new Promise((resolve) => { revokeBatch = resolve; });
+  return rows;
+} }, batchTicket);
+while (!revokeBatch) await new Promise((resolve) => setImmediate(resolve));
+map.set(authorizationKeys[0], { ...map.get(authorizationKeys[0]), revoked: true });
+revokeBatch();
+assert.equal(await revokingDownload, undefined, 'revocation during batch reads remains effective');
+for (const [key, value] of authorizationSnapshot) map.set(key, structuredClone(value));
+
 for (const address of ['0.0.0.0', '127.0.0.1', '10.2.3.4', '172.16.0.1', '192.168.1.1',
   '169.254.169.254', '100.64.1.2', '198.18.0.2', '192.0.2.1', '203.0.113.1', '::1',
   '::ffff:127.0.0.1', 'fc00::1', 'fe80::1', '2001:db8::1', '2002:7f00:1::']) assert.equal(publicAddress(address), false, address);
@@ -213,4 +386,4 @@ assert.equal(invalidBatch.requests.length, 0, 'entire file manifest is validated
 const totalLimit = httpFixture([0, 1, 2].map(() => ({ chunks: [Buffer.alloc(7 * 1024 * 1024)] })));
 await assert.rejects(totalLimit.materializeHostFiles([0, 1, 2].map((index) =>
   ({ ...hostFile, file_name: `attachment-${index}.bin` }))), /file_input_limit/);
-console.log(JSON.stringify({ ok: true, checks: 'binary round-trip, expiry, account/grant/consent binding, chunk grant isolation, manifest-last, tamper, partial writes; real downloader with HTTPS/DNS doubles: pinning, rebinding, redirects, private addresses, missing/aborted responses, byte limits, DNS/HTTP deadlines, strict whole-batch file input', network: false }));
+console.log(JSON.stringify({ ok: true, checks: 'binary round-trip, expiry, account/grant/consent binding and async mid-download revocation, expiry during final authorization read, chunk grant isolation, manifest-last, tamper, partial writes; real downloader with HTTPS/DNS doubles: pinning, rebinding, redirects, private addresses, missing/aborted responses, byte limits, DNS/HTTP deadlines, strict whole-batch file input', network: false }));

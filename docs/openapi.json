@@ -87,10 +87,14 @@
                 "additionalProperties": false,
                 "properties": {
                   "sealed": {
-                    "type": "string",
-                    "maxLength": 70000,
-                    "description": "有时间限制、经AES256GCM认证加密的内部命令封装",
-                    "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag"
+                    "description": "单个加密存储命令，或仅用于文件分片同类读写的批量封包；每条独立认证加密并校验有效期",
+                    "oneOf": [
+                      { "type": "string", "minLength": 40, "maxLength": 70000,
+                        "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" },
+                      { "type": "array", "minItems": 1, "maxItems": 8,
+                        "items": { "type": "string", "minLength": 40, "maxLength": 70000,
+                          "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" } }
+                    ]
                   }
                 }
               }
@@ -108,9 +112,14 @@
                   "additionalProperties": false,
                   "properties": {
                     "sealed": {
-                      "type": "string",
-                      "description": "绑定本次请求摘要的AES256GCM响应封装",
-                      "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag"
+                      "description": "绑定本次请求摘要的独立加密响应，批量时数量及顺序必须与请求一致",
+                      "oneOf": [
+                        { "type": "string", "minLength": 40, "maxLength": 70000,
+                          "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" },
+                        { "type": "array", "minItems": 1, "maxItems": 8,
+                          "items": { "type": "string", "minLength": 40, "maxLength": 70000,
+                            "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" } }
+                      ]
                     }
                   }
                 }

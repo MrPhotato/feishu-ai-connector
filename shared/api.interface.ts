@@ -45,6 +45,17 @@ export interface ConnectorAuthStorageEnvelope {
   sealed: string;
 }
 
+/** File chunks only; each array entry retains its own encryption and response AAD. */
+export interface ConnectorAuthStorageFileBatchEnvelope {
+  sealed: string[];
+}
+
+export interface ConnectorAuthStorageFileChunkEntry {
+  key: string;
+  payload: Record<string, unknown>;
+  expiresAt: number;
+}
+
 export type FeishuToolMode = 'read' | 'write';
 
 export interface FeishuOperationCatalogEntry {

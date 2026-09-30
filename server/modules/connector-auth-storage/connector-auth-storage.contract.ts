@@ -43,6 +43,39 @@ const storageResponseSchema = z.object({
 
 type StorageCommand = z.infer<typeof storageCommandSchema>;
 
+const STORAGE_FILE_BATCH_MAX_BYTES: number = 560000;
+const storageFileBatchEnvelopeSchema = z.object({
+  sealed: z.array(storageEnvelopeSchema.shape.sealed).min(1).max(8),
+}).strict();
+const storageFileBatchCommandSchema = z.array(storageCommandSchema).min(1).max(8).superRefine((commands, context): void => {
+  const firstOperation: string = commands[0]?.operation ?? '';
+  const keys: Set<string> = new Set();
+  for (const command of commands) {
+    if ((command.operation !== 'get' && command.operation !== 'put') ||
+      command.model !== 'FeishuFileChunk' || command.operation !== firstOperation || keys.has(command.key)) {
+      context.addIssue({ code: 'custom', message: 'File batch rejected.' });
+      return;
+    }
+    keys.add(command.key);
+  }
+});
+
+function validateStorageFileBatchEnvelope(value: unknown): z.infer<typeof storageFileBatchEnvelopeSchema> {
+  const serialized: string | undefined = JSON.stringify(value);
+  if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > STORAGE_FILE_BATCH_MAX_BYTES) {
+    throw new Error('File batch rejected.');
+  }
+  return storageFileBatchEnvelopeSchema.parse(value);
+}
+
+function validateStorageFileBatchResponse(value: unknown, operation: 'get' | 'put'): z.infer<typeof storageResponseSchema> {
+  validateStorageJson(value);
+  const result = storageResponseSchema.parse(value);
+  if (result.consumed !== undefined || result.leaseToken !== undefined ||
+    (operation === 'put' && result.record !== undefined)) throw new Error('File batch response rejected.');
+  return result;
+}
+
 // Bound both bytes and depth before recursive validation or encryption.
 function validateStorageJson(value: unknown): void {
   const serialized: string | undefined = JSON.stringify(value);
@@ -69,5 +102,7 @@ function validateStorageJson(value: unknown): void {
 export {
   storageCommandSchema, storageEnvelopeSchema, storagePayloadSchema,
   storageResponseSchema, storageTimedCommandSchema, validateStorageJson,
+  STORAGE_FILE_BATCH_MAX_BYTES, storageFileBatchEnvelopeSchema, storageFileBatchCommandSchema,
+  validateStorageFileBatchEnvelope, validateStorageFileBatchResponse,
 };
 export type { StorageCommand };

@@ -19,11 +19,14 @@ import type { FeishuNativeRequest } from './feishu-task-tools.native';
 import { buildAttachmentPlan, executeAttachmentDownload } from './feishu-attachments';
 import { materializeHostFiles } from './feishu-file-input';
 import { publishFile } from './feishu-file-delivery';
+import { feishuAttachmentDiagnostics } from './feishu-attachment.diagnostics';
 import type { FeishuFileLink } from '@shared/api.interface';
 
 interface FeishuToolsStore {
   get(model: string, key: string): Promise<Record<string, unknown> | undefined>;
   put(model: string, key: string, value: Record<string, unknown>, expiresAt: number): Promise<void>;
+  getFileChunks?(keys: string[]): Promise<Array<Record<string, unknown> | undefined>>;
+  putFileChunks?(entries: Array<{ key: string; payload: Record<string, unknown>; expiresAt: number }>): Promise<void>;
   acquireLease(key: string, ttlSeconds?: number): Promise<string | undefined>;
   releaseLease(key: string, leaseToken: string): Promise<void>;
 }
@@ -113,7 +116,10 @@ class FeishuToolExecutor {
       if (request.task === 'native_catalog') return await discoverNative(request);
       if (request.task === 'download_attachment') {
         const plan = buildAttachmentPlan(request.arguments);
+        const accountStarted: number = performance.now();
         const account = await this.cliAccount(principal, 'read', plan.scopeGroups);
+        feishuAttachmentDiagnostics.stage(plan.source, 'account', !('ok' in account),
+          performance.now() - accountStarted, 'ok' in account ? (account as FeishuToolResult).error?.code : 'none');
         if ('ok' in account) return account as FeishuToolResult;
         const result: FeishuToolResult = await executeAttachmentDownload(plan, async (argv, options) => {
           return this.nativeRunner(argv, {
@@ -121,14 +127,23 @@ class FeishuToolExecutor {
           }, { ...options, collectFiles: plan.collectFiles });
         });
         if (result.ok && isObject(result.data) && Array.isArray(result.data.files)) {
-          const links: FeishuFileLink[] = [];
-          for (const file of result.data.files) {
-            if (!isObject(file) || typeof file.name !== 'string' || typeof file.dataBase64 !== 'string' ||
-              typeof file.byteLength !== 'number') throw new Error('file_delivery_invalid');
-            links.push(await publishFile(this.store, principal, { name: file.name, dataBase64: file.dataBase64,
-              byteLength: file.byteLength, mimeType: typeof file.mimeType === 'string' ? file.mimeType : undefined }));
+          const deliveryStarted: number = performance.now();
+          try {
+            const links: FeishuFileLink[] = [];
+            for (const file of result.data.files) {
+              if (!isObject(file) || typeof file.name !== 'string' || typeof file.dataBase64 !== 'string' ||
+                typeof file.byteLength !== 'number') throw new Error('file_delivery_invalid');
+              links.push(await publishFile(this.store, principal, { name: file.name, dataBase64: file.dataBase64,
+                byteLength: file.byteLength, mimeType: typeof file.mimeType === 'string' ? file.mimeType : undefined }));
+            }
+            result.data.files = links;
+            feishuAttachmentDiagnostics.stage(plan.source, 'file_delivery', true,
+              performance.now() - deliveryStarted);
+          } catch (error: unknown) {
+            feishuAttachmentDiagnostics.stage(plan.source, 'file_delivery', false,
+              performance.now() - deliveryStarted, error instanceof Error ? error.message : undefined);
+            throw error;
           }
-          result.data.files = links;
         }
         return sanitize(result, [String(account.access_token), String(account.refresh_token ?? '')]) as FeishuToolResult;
       }
@@ -175,13 +190,16 @@ class FeishuToolExecutor {
         'native_operation_not_available', 'native_command_invalid', 'cli_catalog_invalid',
         'native_execution_restricted', 'native_flag_invalid', 'native_file_reference_invalid', 'native_inline_reference_invalid',
         'file_input_url_invalid', 'file_input_timeout', 'file_input_unavailable', 'file_input_name_invalid', 'file_input_limit',
-        'file_delivery_invalid', 'cli_file_limit', 'cli_file_input_invalid', 'cli_file_reference_invalid',
+        'file_delivery_invalid', 'file_delivery_unavailable', 'file_delivery_timeout',
+        'cli_file_limit', 'cli_file_input_invalid', 'cli_file_reference_invalid',
         'cli_file_output_invalid', 'cli_file_sensitive_output',
       'opened_range_exceeds_90_days', 'document_reference_invalid', 'subject_must_be_one_line',
       'cli_arguments_limit', 'cli_timeout', 'cli_output_limit', 'cli_runtime_unavailable',
       'cli_cleanup_boundary', 'cli_invalid_output', 'cli_credentials_invalid'];
     const code: string = error instanceof Error && safeCodes.includes(error.message) ? error.message : 'cli_unavailable';
     const messages: Record<string, string> = {
+        file_delivery_unavailable: '文件已生成，但临时下载链接保存失败，本次未交付文件。业务写入可能已完成，请先核对，不要自动重复写入。',
+        file_delivery_timeout: '文件已生成，但临时下载链接保存超时，本次未交付文件。业务写入可能已完成，请先核对，不要自动重复写入。',
         native_confirmation_required: '该操作要求明确确认；请按 native_catalog 指定的 yes 或 confirmed 字段传入 true。本次未执行。',
         native_arguments_invalid: '参数不符合官方定义，请读取该操作的 native_catalog 参数。',
         native_operation_not_available: '该原生操作未开放，或使用了错误的读写入口。',
