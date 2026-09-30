@@ -58,6 +58,12 @@ const TASK_DESCRIPTIONS: Record<FeishuTaskName, TaskToolDescription> = {
   },
 };
 const NATIVE_DESCRIPTIONS: Record<FeishuNativeName, TaskToolDescription> = {
+  download_attachment: {
+    title: '下载飞书附件与文件', mode: 'read',
+    description: '下载邮件附件、聊天文件/图片、云盘文件或导出云文档。使用读取结果中的真实附件/消息/文件标识，'
+      + '返回可下载链接；本工具不发送或修改业务内容。邮件链接由飞书提供，其他文件链接15分钟有效，过期重新调用。'
+      + '获取下载链接不代表已阅读文件正文；需要分析时继续读取文件。',
+  },
   skill_read: {
     title: '按需读取官方飞书技能', mode: 'read',
     description: '仅在需要领域策略/官方快捷命令用法时读取一个 lark-* Skill 或 reference。'
@@ -66,8 +72,9 @@ const NATIVE_DESCRIPTIONS: Record<FeishuNativeName, TaskToolDescription> = {
   },
   native_catalog: {
     title: '查找官方飞书原生操作', mode: 'read',
-    description: '用于直接工具未覆盖的操作。无 operation 只返回领域/操作简表；'
-      + '指定精确 operation 才返回该操作完整 schema、身份和读写权限。按需查一个领域，不能假设目录中所有操作已获授权。',
+    description: '按query关键词搜索官方CLI完整命令目录，或按domain筛选；使用pageToken继续。'
+      + '指定operation返回精确参数、执行状态及限制。既覆盖原生API也覆盖快捷命令，优先可执行shortcut。'
+      + '目录可发现不代表已授权；host_managed/identity_restricted等项目会说明原因，不要反复尝试。',
   },
   native_read: {
     title: '执行已查明的官方飞书读取操作', mode: 'read',
@@ -78,6 +85,7 @@ const NATIVE_DESCRIPTIONS: Record<FeishuNativeName, TaskToolDescription> = {
     title: '执行已授权的官方飞书写入操作', mode: 'write',
     description: '仅在用户本次明确要求写入/执行时使用，先查精确原生操作 schema 和身份权限。'
       + 'arguments 必须匹配 schema；若 schema 要求 yes，须依据明确授权传 arguments.yes:true，服务端不自动补确认。'
+      + '通过files传入ChatGPT文件，参数引用input/<file_name>（缺省input/file-1.bin）。'
       + 'userIntent 如实记录动作、目标及内容；未知风险会拒绝，结果不确定不自动重试。',
   },
 };
@@ -88,8 +96,19 @@ const TASK_RESULT_SCHEMA: z.ZodType<FeishuToolResult> = z.object({
 });
 
 function taskToolResult(result: FeishuToolResult): CallToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(result) }],
+  const response: CallToolResult = { content: [{ type: 'text', text: JSON.stringify(result) }],
     structuredContent: { ...result }, isError: !result.ok };
+  if (result.ok && result.data && typeof result.data === 'object' && 'files' in result.data &&
+    Array.isArray(result.data.files)) {
+    for (const file of result.data.files) {
+      if (!file || typeof file !== 'object' || typeof file.downloadUrl !== 'string' ||
+        !file.downloadUrl.startsWith('https://') || typeof file.name !== 'string' ||
+        typeof file.mimeType !== 'string' || !Number.isSafeInteger(file.byteLength)) continue;
+      response.content.push({ type: 'resource_link', uri: file.downloadUrl, name: file.name,
+        mimeType: file.mimeType, size: file.byteLength, description: '临时附件下载链接，15分钟后失效。' });
+    }
+  }
+  return response;
 }
 
 function registerValidatedTask(
@@ -100,6 +119,8 @@ function registerValidatedTask(
   server.registerTool(name, {
     title: description.title, description: description.description,
     inputSchema: schema, outputSchema: TASK_RESULT_SCHEMA,
+    ...(name === 'feishu_native_read' || name === 'feishu_native_write'
+      ? { _meta: { 'openai/fileParams': ['files'] } } : {}),
     annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly,
       idempotentHint: readOnly, openWorldHint: true },
   }, async (args: unknown): Promise<CallToolResult> => {

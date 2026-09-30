@@ -7,11 +7,13 @@ import { loadConnectorAuthConfig } from '../connector-auth/connector-auth.config
 import type { ConnectorAuthConfig } from '../connector-auth/connector-auth.types';
 import { FeishuToolExecutor } from './feishu-tools.executor';
 import type { FeishuAppCredentials, FeishuHttpRequest, FeishuHttpReply } from './feishu-tools.executor';
+import { retrieveFile } from './feishu-file-delivery';
+import type { DeliveredFile } from './feishu-file-delivery';
 
 @Injectable()
 class FeishuToolsService extends FeishuToolExecutor {
-  constructor(storage: ConnectorAuthStorageService, http: HttpService) {
-    super(storage, async (request: FeishuHttpRequest): Promise<FeishuHttpReply> => {
+  constructor(private readonly fileStorage: ConnectorAuthStorageService, http: HttpService) {
+    super(fileStorage, async (request: FeishuHttpRequest): Promise<FeishuHttpReply> => {
       const reply: AxiosResponse<unknown> = await firstValueFrom(http.request<unknown>({
         url: request.url, method: request.method, params: request.query,
         headers: request.headers, data: request.body,
@@ -23,6 +25,10 @@ class FeishuToolsService extends FeishuToolExecutor {
       const config: ConnectorAuthConfig = loadConnectorAuthConfig();
       return { clientId: config.feishuAppId, clientSecret: config.feishuAppSecret };
     });
+  }
+
+  downloadFile(ticket: string): Promise<DeliveredFile | undefined> {
+    return retrieveFile(this.fileStorage, ticket);
   }
 }
 

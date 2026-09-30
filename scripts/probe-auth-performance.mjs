@@ -60,7 +60,8 @@ const second = await identity('second');
 const verified = await oidc.verifyMcpAuthorization(first.token);
 assert.equal(maxActive, 2, 'Grant and account reads are concurrent');
 assert.deepEqual(calls, ['Grant', 'FeishuAccount']);
-assert.deepEqual(verified.principal, { accountId: first.accountId, scopes: ['feishu.read'] });
+assert.deepEqual(verified.principal, { accountId: first.accountId, scopes: ['feishu.read'],
+  grantId: first.grantId, clientId: 'chatgpt' });
 assert.equal(verified.account.access_token, first.account.access_token);
 assert.ok(!JSON.stringify(verified.principal).includes(sentinel), 'legacy principal never contains credentials');
 verified.account.access_token = 'mutated-test-copy';

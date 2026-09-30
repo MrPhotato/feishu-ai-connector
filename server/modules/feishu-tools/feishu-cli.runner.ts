@@ -4,10 +4,12 @@ import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { connectorDefaultTimezone } from '../../config/connector-deployment.config';
+import { prepareCliFiles, validateCliFileArguments, collectCliFiles } from './feishu-cli.files';
+import type { FeishuCliFileManifest, FeishuCliFileOptions, FeishuCliOutputFile } from './feishu-cli.files';
 
 interface FeishuCliCredentials { appId: string; accessToken: string }
-interface FeishuCliReply { exitCode: number; output: unknown }
-interface FeishuCliOptions { timeoutMs?: number }
+interface FeishuCliReply { exitCode: number; output: unknown; files?: FeishuCliOutputFile[] }
+interface FeishuCliOptions extends FeishuCliFileOptions { timeoutMs?: number; allowTextOutput?: boolean }
 interface FeishuCliRuntime {
   available: boolean;
   version?: string;
@@ -56,7 +58,7 @@ async function cleanup(directory: string): Promise<void> {
 }
 
 async function executeBinary(argv: readonly string[], credentials?: FeishuCliCredentials, options: FeishuCliOptions = {}): Promise<{
-  exitCode: number; stdout: string; stderr: string;
+  exitCode: number; stdout: string; stderr: string; files?: FeishuCliOutputFile[];
 }> {
   if (argv.length > 100 || argv.some((value: string): boolean => value.includes('\0')) ||
     Buffer.byteLength(JSON.stringify(argv), 'utf8') > 131072) throw new Error('cli_arguments_limit');
@@ -65,7 +67,9 @@ async function executeBinary(argv: readonly string[], credentials?: FeishuCliCre
   const directory: string = await mkdtemp(join(tmpdir(), 'feishu-cli-'));
   try {
     await mkdir(join(directory, 'config'));
-    return await new Promise((accept, reject): void => {
+    const manifest: FeishuCliFileManifest = await prepareCliFiles(directory, options);
+    validateCliFileArguments(argv, manifest);
+    const result: { exitCode: number; stdout: string; stderr: string } = await new Promise((accept, reject): void => {
       // Never invoke a shell or inherit the server's environment/credentials.
       const child: ChildProcessWithoutNullStreams = spawn(binaryPath(), [...argv], {
         cwd: directory, env: isolatedEnvironment(directory, credentials),
@@ -108,6 +112,9 @@ async function executeBinary(argv: readonly string[], credentials?: FeishuCliCre
           stderr: Buffer.concat(errorChunks).toString('utf8') });
       });
     });
+    const files: FeishuCliOutputFile[] = result.exitCode === 0
+      ? await collectCliFiles(directory, manifest, credentials ? [credentials.accessToken] : []) : [];
+    return { ...result, ...(files.length ? { files } : {}) };
   } finally {
     await cleanup(directory);
   }
@@ -119,9 +126,16 @@ async function runFeishuCli(
   const result = await executeBinary(argv, credentials, options);
   try {
     const output: unknown = JSON.parse(result.exitCode === 0 ? result.stdout : result.stderr);
-    return { exitCode: result.exitCode, output };
+    return { exitCode: result.exitCode, output, ...(result.files ? { files: result.files } : {}) };
   }
-  catch { throw new Error('cli_invalid_output'); }
+  catch {
+    // Opt in only for verified shortcut output contracts; errors remain structured and private.
+    if (result.exitCode === 0 && (options.allowTextOutput === true || (!result.stdout.trim() && result.files?.length))) {
+      return { exitCode: 0, output: { ok: true, data: { text: result.stdout } },
+        ...(result.files ? { files: result.files } : {}) };
+    }
+    throw new Error('cli_invalid_output');
+  }
 }
 
 function probeFeishuCli(): Promise<FeishuCliRuntime> {

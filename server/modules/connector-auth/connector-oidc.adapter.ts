@@ -2,7 +2,38 @@ import { errors } from 'oidc-provider';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
 import { authNow, authRecord } from './connector-auth.types';
 import type { ConnectorAuthStore } from './connector-auth.types';
-import { connectorAuthStorageOperation } from './connector-auth.unavailable';
+import { ConnectorAuthUnavailableError, connectorAuthStorageOperation } from './connector-auth.unavailable';
+
+function samePayload(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  const canonical = (value: Record<string, unknown>): string => JSON.stringify(value,
+    (_key: string, item: unknown): unknown => authRecord(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]): number => a < b ? -1 : a > b ? 1 : 0)) : item);
+  return canonical(left) === canonical(right);
+}
+
+/** Recover only this newly issued token's idempotent persistence, never its predecessor's consume. */
+async function saveRefreshToken(
+  store: ConnectorAuthStore, id: string, payload: Record<string, unknown>, expiresAt: number,
+  uid?: string, grantId?: string,
+): Promise<void> {
+  for (let attempt: number = 0; attempt < 2; attempt++) {
+    try { await store.put('RefreshToken', id, payload, expiresAt, uid, grantId); return; }
+    catch {
+      // A timeout may mean either no write or a lost acknowledgement. Read the exact
+      // key before retrying; never replace a different or already consumed artifact.
+      const stored: Record<string, unknown> | undefined = await connectorAuthStorageOperation(() =>
+        store.get('RefreshToken', id));
+      if (stored) {
+        if (expiresAt > authNow() && !Object.prototype.hasOwnProperty.call(stored, 'consumed') &&
+          samePayload(stored, payload)) return;
+        throw new ConnectorAuthUnavailableError();
+      }
+      if (attempt === 1 || expiresAt <= authNow()) throw new ConnectorAuthUnavailableError();
+      // Retry exactly once, retaining absolute expiry and payload. Storage preserves
+      // consumedAt and checks revocation tombstones before and after every upsert.
+    }
+  }
+}
 
 /** The provider never receives its development-only memory adapter. */
 export function connectorAdapter(store: ConnectorAuthStore): AdapterFactory {
@@ -12,7 +43,11 @@ export function connectorAdapter(store: ConnectorAuthStore): AdapterFactory {
       // Provider payloads contain optional undefined fields; persistence uses JSON semantics.
       const serialized: unknown = JSON.parse(JSON.stringify(payload));
       if (!authRecord(serialized)) throw new Error('Invalid authorization record');
-      await connectorAuthStorageOperation(() => store.put(model, id, serialized, expiresAt, payload.uid, payload.grantId));
+      if (model === 'RefreshToken') {
+        await saveRefreshToken(store, id, serialized, expiresAt, payload.uid, payload.grantId);
+      } else {
+        await connectorAuthStorageOperation(() => store.put(model, id, serialized, expiresAt, payload.uid, payload.grantId));
+      }
     },
     async find(id: string): Promise<AdapterPayload | undefined> {
       // This authenticated record was originally produced by oidc-provider's adapter contract.

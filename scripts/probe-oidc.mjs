@@ -473,9 +473,12 @@ try {
   assert.ok(tokens.refresh_token, 'offline_access with explicit consent issues refresh token');
   const id = await jwtVerify(tokens.id_token, publicKeyResolver, { issuer: config.issuer, audience: client.client_id, algorithms: ['RS256'] });
   assert.equal(id.payload.nonce, 'synthetic-rp-nonce');
-  assert.deepEqual(await oidc.verifyMcpToken(tokens.access_token), {
+  const verifiedPrincipal = await oidc.verifyMcpToken(tokens.access_token);
+  assert.deepEqual({ accountId: verifiedPrincipal.accountId, scopes: verifiedPrincipal.scopes }, {
     accountId: 'tenant_protocol:ou_protocol_test_a', scopes: ['feishu.read', 'feishu.write'],
   });
+  assert.equal(verifiedPrincipal.clientId, client.client_id);
+  assert.equal(typeof verifiedPrincipal.grantId, 'string');
   const tampered = tokens.access_token.split('.'); tampered[1] = Buffer.from('{"sub":"attacker"}').toString('base64url');
   await assert.rejects(() => oidc.verifyMcpToken(tampered.join('.')));
   await assert.rejects(() => oidc.verifyMcpToken(tokens.id_token));

@@ -7,6 +7,8 @@ import type { VerifiedMcpAuthorization } from '../connector-auth/connector-auth.
 import { FeishuToolsService } from './feishu-tools.service';
 import { createFeishuMcpServer } from './feishu-tools.mcp';
 import { probeFeishuCli } from './feishu-cli.runner';
+import { FEISHU_TASK_SCHEMAS } from './feishu-task-tools.contract';
+import { FEISHU_NATIVE_SCHEMAS } from './feishu-task-tools.native';
 import { connectorPrivateRequest, connectorPrivateResponse } from '../connector-privacy/connector-privacy.middleware';
 
 type McpRequestMethod = 'initialize' | 'notifications_initialized' | 'tools_list' | 'tools_call' | 'other';
@@ -29,6 +31,31 @@ class FeishuToolsController {
   private readonly logger: Logger = new Logger('FeishuMcpDiagnostics');
 
   constructor(private readonly auth: ConnectorAuthService, private readonly tools: FeishuToolsService) {}
+
+  @Get('mcp/files/download')
+  async download(@Req() request: Request, @Res() response: Response): Promise<void> {
+    let output: Response = response;
+    try {
+      output = connectorPrivateResponse(response);
+      const input: Request = connectorPrivateRequest(request);
+      const ticket: unknown = input.query.ticket;
+      const file = typeof ticket === 'string' ? await this.tools.downloadFile(ticket) : undefined;
+      output.setHeader('Cache-Control', 'no-store').setHeader('Referrer-Policy', 'no-referrer')
+        .setHeader('X-Content-Type-Options', 'nosniff').setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      if (!file) {
+        output.status(410).type('text/plain').send('下载链接已失效，请在 ChatGPT 中重新获取附件。');
+        return;
+      }
+      output.setHeader('Content-Type', file.mimeType)
+        .setHeader('Content-Disposition', `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(file.name)}`)
+        .setHeader('Content-Length', file.bytes.length).send(file.bytes);
+    } catch {
+      if (!output.headersSent) output.status(503).setHeader('Cache-Control', 'no-store')
+        .setHeader('Referrer-Policy', 'no-referrer').setHeader('X-Content-Type-Options', 'nosniff')
+        .setHeader('Content-Security-Policy', "default-src 'none'; sandbox").type('text/plain')
+        .send('附件暂时无法下载，请稍后重试。');
+    }
+  }
 
   @Get('.well-known/oauth-protected-resource/mcp')
   metadata(@Res() response: Response): void {
@@ -127,7 +154,7 @@ class FeishuToolsController {
     // Before authentication/registration completes, false/3 denotes the unselected native group.
     try {
       this.logger.log(JSON.stringify({ event: 'connector_mcp_request', method, nativeEnabled,
-        toolCount: nativeEnabled ? 16 : 3,
+        toolCount: 3 + (nativeEnabled ? Object.keys(FEISHU_TASK_SCHEMAS).length + Object.keys(FEISHU_NATIVE_SCHEMAS).length : 0),
         statusCode: Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : 0,
         durationMs: Math.max(0, Math.round(performance.now() - started)), failureStage }));
     } catch { /* Diagnostic sink failures must not affect the request or log sensitive context. */ }

@@ -56,9 +56,10 @@ const sample = { name: 'mail user_mailboxes search', inputSchema: { type: 'objec
 } }, _meta: { risk: 'write', access_tokens: ['user'], scopes: ['umbrella', 'alternative'], required_scopes: [] } };
 assert.deepEqual(projectMethod(sample).method.scopeGroups, [['umbrella', 'alternative']]);
 assert.equal(projectMethod(sample).method.mode, 'write');
-assert.equal(projectMethod({ ...sample, name: 'apps applications delete' }).reason, 'nonbusiness_service');
-assert.equal(projectMethod({ ...sample, name: 'mail files download' }).reason, 'file_operation');
-assert.equal(projectMethod({ ...sample, _meta: { ...sample._meta, access_tokens: ['bot'] } }).reason, 'not_user_identity');
+assert.equal(projectMethod({ ...sample, name: 'apps applications delete' }).method.availability, 'executable');
+assert.equal(projectMethod({ ...sample, name: 'mail files download' }).method.availability, 'executable');
+assert.equal(projectMethod({ ...sample, _meta: { ...sample._meta, access_tokens: ['bot'] } }).method.reason,
+  'not_user_identity');
 const confirmed = { ...sample, inputSchema: { type: 'object', properties: { ...sample.inputSchema.properties,
   yes: { type: 'boolean', flag: '--yes' } } },
   _meta: { ...sample._meta, risk: 'high-risk-write', required_scopes: ['read', 'body'] } };

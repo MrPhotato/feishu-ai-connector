@@ -66,7 +66,7 @@ const check = (condition, message) => { assert.ok(condition, message); assertion
 const runtime = await fixture();
 try {
   const { tools } = await runtime.client.listTools();
-  check(tools.length === 16, '9 common + 4 native + 3 legacy tools');
+  check(tools.length === 17, '9 common + 5 native + 3 legacy tools');
   const commonNames = Object.keys(FEISHU_TASK_SCHEMAS).map((name) => `feishu_${name}`);
   const nativeNames = Object.keys(FEISHU_NATIVE_SCHEMAS).map((name) => `feishu_${name}`);
   for (const name of [...commonNames, ...nativeNames]) {
@@ -81,6 +81,14 @@ try {
   const searchDoc = tools.find((tool) => tool.name === 'feishu_search_documents');
   check(searchDoc.inputSchema.properties.pageSize.maximum === 20, 'document page size is capped at 20');
   check(!searchDoc.inputSchema.properties.arguments, 'common tool uses direct fields, not opaque arguments');
+  for (const name of ['feishu_native_read', 'feishu_native_write']) {
+    const entry = tools.find((tool) => tool.name === name);
+    check(JSON.stringify(entry._meta['openai/fileParams']) === '["files"]', `host file input ${name}`);
+    check(['download_url', 'file_id', 'mime_type', 'file_name'].every((key) =>
+      key in entry.inputSchema.properties.files.items.properties), `complete host file contract ${name}`);
+  }
+  const attachmentTool = tools.find((tool) => tool.name === 'feishu_download_attachment');
+  check(attachmentTool.inputSchema.type === 'object', 'attachment tool has host-compatible object schema');
 
   const examples = {
     search_messages: { senderIds: ['me'], startTime: '2026-09-10T00:00:00+08:00',
@@ -144,6 +152,7 @@ try {
     skill_read: { skill: 'lark-mail/references/lark-mail-search.md' },
     native_catalog: { domain: 'mail', operation: 'mail.v1.user_mailbox_message.get', mode: 'read' },
     native_read: { operation: 'mail.v1.user_mailbox_message.get', arguments: { message_id: 'synthetic' } },
+    download_attachment: { source: 'drive', fileToken: 'synthetic-file' },
     native_write: { operation: 'mail.v1.user_mailbox_message.send', arguments: { yes: true }, userIntent },
   })) {
     const result = await runtime.client.callTool({ name: `feishu_${task}`, arguments: args });
@@ -189,6 +198,18 @@ try {
   const failure = await failureRuntime.client.callTool({ name: 'feishu_find_people', arguments: { userIds: ['me'] } });
   check(failure.isError && !JSON.stringify(failure).includes('secret-error-must-not-escape'), 'provider error remains private');
 } finally { await failureRuntime.close(); }
+
+const fileRuntime = await fixture(principal, taskExecutor, async () => ({ ok: true, data: {
+  files: [{ name: 'example.pdf', mimeType: 'application/pdf', byteLength: 7,
+    downloadUrl: 'https://example.invalid/mcp/files/download?ticket=synthetic', expiresAt: '2099-01-01T00:00:00.000Z' }],
+} }));
+try {
+  const result = await fileRuntime.client.callTool({ name: 'feishu_download_attachment',
+    arguments: { source: 'drive', fileToken: 'synthetic-file' } });
+  const resource = result.content.find((part) => part.type === 'resource_link');
+  check(resource?.name === 'example.pdf' && resource.size === 7, 'download exposes native MCP file link');
+  check(!JSON.stringify(result).includes('dataBase64'), 'download metadata does not expose file bytes to model');
+} finally { await fileRuntime.close(); }
 
 const legacyOnlyServer = createFeishuMcpServer(legacy, principal);
 const legacyOnlyClient = new Client({ name: 'legacy-only-test', version: '1.0.0' });

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DATABASE, type PostgresJsDatabase } from '@lark-apaas/fullstack-nestjs-core';
-import { and, eq, gt, isNull, lte } from 'drizzle-orm';
+import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { connectorAuthRecord } from '@server/database/schema';
 import type { ConnectorAuthStorageResponse } from '@shared/api.interface';
@@ -20,6 +20,14 @@ class ConnectorAuthStorageRepository {
   ) {}
 
   async execute(command: StorageCommand): Promise<ConnectorAuthStorageResponse> {
+    if ((command.operation === 'get' || command.operation === 'put') && command.model === 'FeishuFile') {
+      // Links expire immediately; encrypted file rows are removed on the next publish/download attempt.
+      // OAuth records, revocation tombstones and refresh leases are never part of this cleanup.
+      await this.db.delete(connectorAuthRecord).where(and(
+        or(eq(connectorAuthRecord.model, 'FeishuFile'), eq(connectorAuthRecord.model, 'FeishuFileChunk')),
+        lte(connectorAuthRecord.expiresAt, new Date()),
+      ));
+    }
     switch (command.operation) {
       case 'get': return { ok: true, record: await this.get(command.model, command.key) };
       case 'findUid': return { ok: true, record: await this.findUid(command.model, command.uid) };

@@ -1,0 +1,216 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dependency = createRequire(import.meta.url);
+function loader(stubs = {}, timer = setTimeout) {
+const cache = new Map();
+function load(file) {
+  const absolute = path.resolve(root, file);
+  if (cache.has(absolute)) return cache.get(absolute).exports;
+  const module = { exports: {} }; cache.set(absolute, module);
+  const code = ts.transpileModule(fs.readFileSync(absolute, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  }).outputText;
+  new Function('require', 'module', 'exports', 'setTimeout', code)((name) => stubs[name] ?? (name.startsWith('.')
+    ? load(path.resolve(path.dirname(absolute), `${name}.ts`)) : dependency(name)), module, module.exports, timer);
+  return module.exports;
+}
+return load;
+}
+const load = loader();
+process.env.CONNECTOR_PUBLIC_URL = 'https://connector.example.test';
+delete process.env.CONNECTOR_DEPLOYMENT_CONFIG;
+const { publishFile, retrieveFile } = load('server/modules/feishu-tools/feishu-file-delivery.ts');
+const { publicAddress, inputUrl, hostFileSchema } = load('server/modules/feishu-tools/feishu-file-input.ts');
+const { validateStorageJson } = load('server/modules/connector-auth-storage/connector-auth-storage.contract.ts');
+const principal = { accountId: 'tenant:ou_synthetic', scopes: ['feishu.read'], grantId: 'grant_synthetic', clientId: 'chatgpt' };
+const expiry = Math.floor(Date.now() / 1000) + 3600;
+const map = new Map([
+  ['FeishuAccount:tenant:ou_synthetic', { tenant_key: 'tenant', open_id: 'ou_synthetic' }],
+  ['Grant:grant_synthetic', { accountId: principal.accountId, clientId: 'chatgpt', exp: expiry,
+    resources: { 'https://connector.example.test/mcp': 'feishu.read' } }],
+  ['Consent:grant_synthetic', { accountId: principal.accountId, clientId: 'chatgpt', grantId: principal.grantId,
+    resource: 'https://connector.example.test/mcp', scopes: ['feishu.read'], expiresAt: expiry }],
+]);
+const store = {
+  async get(model, key) { return structuredClone(map.get(`${model}:${key}`)); },
+  async put(model, key, payload, expiresAt) {
+    validateStorageJson({ operation: 'put', model, key, payload, expiresAt });
+    map.set(`${model}:${key}`, structuredClone(payload));
+  },
+};
+const bytes = Buffer.alloc(80_000, 37);
+const file = { name: 'report.txt', mimeType: 'text/plain', dataBase64: bytes.toString('base64'), byteLength: bytes.length };
+const link = await publishFile(store, principal, file);
+const ticket = new URL(link.downloadUrl).searchParams.get('ticket');
+assert.equal(ticket.length, 43);
+assert.equal(link.byteLength, bytes.length);
+assert.ok(Date.parse(link.expiresAt) > Date.now() + 890000 && Date.parse(link.expiresAt) <= Date.now() + 900000);
+assert(!link.downloadUrl.includes(principal.accountId));
+assert.deepEqual((await retrieveFile(store, ticket)).bytes, bytes);
+assert.ok([...map.entries()].filter(([key]) => key.startsWith('FeishuFileChunk:'))
+  .every(([, value]) => value.grantId === principal.grantId), 'chunks are indexed to the same grant for revocation');
+assert.equal(await retrieveFile(store, `${ticket}x`), undefined);
+const manifestKey = `FeishuFile:${ticket}`;
+const original = structuredClone(map.get(manifestKey));
+for (const change of [{ expiresAt: 1 }, { accountId: 'other:ou_synthetic' }, { parts: 1000000 },
+  { byteLength: 100000000 }, { clientId: 'wrong' }, { grantId: 'missing' }, { scopes: ['feishu.write'] }]) {
+  map.set(manifestKey, { ...original, ...change });
+  assert.equal(await retrieveFile(store, ticket), undefined);
+}
+map.set(manifestKey, original);
+const consent = map.get('Consent:grant_synthetic');
+map.delete('Consent:grant_synthetic');
+assert.equal(await retrieveFile(store, ticket), undefined);
+map.set('Consent:grant_synthetic', consent);
+const chunkKey = `FeishuFileChunk:${ticket}:0`;
+const chunk = map.get(chunkKey);
+map.set(chunkKey, { ...chunk, accountId: 'other' });
+await assert.rejects(retrieveFile(store, ticket), /file_delivery_invalid/);
+map.set(chunkKey, { ...chunk, data: Buffer.alloc(24576, 99).toString('base64') });
+await assert.rejects(retrieveFile(store, ticket), /file_delivery_invalid/);
+map.set(chunkKey, chunk);
+await assert.rejects(publishFile(store, { ...principal, grantId: undefined }, file), /file_delivery_invalid/);
+await assert.rejects(publishFile(store, principal, { ...file, byteLength: 2 }), /file_delivery_invalid/);
+const failingMap = new Map();
+await assert.rejects(publishFile({ ...store, async put(model, key, payload) {
+  if (model === 'FeishuFileChunk') throw new Error('simulated outage');
+  failingMap.set(key, payload);
+} }, principal, file));
+assert.equal(failingMap.size, 0, 'failed chunks cannot publish a usable manifest');
+const delayedMap = new Map();
+const delayedWrites = [];
+const delayedPublish = publishFile({ ...store, async put(model, key, payload) {
+  if (model === 'FeishuFileChunk') await new Promise((resolve) => delayedWrites.push(resolve));
+  delayedMap.set(`${model}:${key}`, payload);
+} }, principal, file);
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal([...delayedMap.keys()].some((key) => key.startsWith('FeishuFile:')), false);
+for (const resolve of delayedWrites) resolve();
+await delayedPublish;
+assert.equal([...delayedMap.keys()].at(-1).startsWith('FeishuFile:'), true, 'manifest is committed only after every chunk');
+for (const address of ['0.0.0.0', '127.0.0.1', '10.2.3.4', '172.16.0.1', '192.168.1.1',
+  '169.254.169.254', '100.64.1.2', '198.18.0.2', '192.0.2.1', '203.0.113.1', '::1',
+  '::ffff:127.0.0.1', 'fc00::1', 'fe80::1', '2001:db8::1', '2002:7f00:1::']) assert.equal(publicAddress(address), false, address);
+assert.equal(publicAddress('8.8.8.8'), true);
+assert.equal(publicAddress('2606:4700:4700::1111'), true);
+for (const url of ['http://example.com/file', 'https://127.0.0.1/file', 'https://a:b@example.com/file',
+  'https://example.com:123/file', 'https://test.local/file']) assert.throws(() => inputUrl(url));
+assert.equal(inputUrl('https://files.example.com/file?signature=synthetic').protocol, 'https:');
+assert(hostFileSchema.safeParse({ download_url: 'https://files.example.com/file', file_id: 'file_synthetic' }).success);
+
+// Exercise the actual downloader with Node stream/request-shaped doubles; no real network or credentials.
+function httpFixture(steps, answers = [{ address: '8.8.8.8', family: 4 }], fastTimers = false) {
+  const requests = []; const resolutions = []; const pinned = []; const destroyed = [];
+  const module = loader({
+    'node:dns/promises': { lookup: async (hostname) => {
+      resolutions.push(hostname);
+      if (typeof answers === 'function') return answers(hostname, resolutions.length);
+      return answers;
+    } },
+    'node:https': { request: (url, options, callback) => {
+      const index = requests.length;
+      requests.push({ url: String(url), options });
+      assert.equal(options.agent, false);
+      assert.equal(options.rejectUnauthorized, undefined, 'TLS validation remains enabled');
+      assert.deepEqual(options.headers, { Accept: '*/*', 'Accept-Encoding': 'identity' });
+      const req = new EventEmitter();
+      req.destroy = () => { destroyed.push(index); queueMicrotask(() => req.emit('close')); };
+      req.end = () => queueMicrotask(() => {
+        options.lookup(url.hostname, {}, (error, address, family) => {
+          assert.equal(error, null); pinned.push({ address, family });
+        });
+        // Even if the transport asks again, it must use the already checked address.
+        options.lookup(url.hostname, {}, (error, address) => { assert.equal(error, null); assert.equal(address, pinned.at(-1).address); });
+        const step = steps[index] ?? {};
+        if (step.error) { req.emit('error', new Error('synthetic upstream private detail')); return; }
+        if (step.noResponse) { req.emit('close'); return; }
+        if (step.hang) return;
+        const response = new PassThrough();
+        response.statusCode = step.status ?? 200;
+        response.headers = step.headers ?? {};
+        response.complete = step.complete ?? true;
+        callback(response);
+        if (response.destroyed) return;
+        if (step.aborted) { response.emit('aborted'); return; }
+        if (step.closed) { response.emit('close'); return; }
+        if (step.bodyError) { response.emit('error', new Error('private response detail')); return; }
+        for (const chunk of step.chunks ?? [Buffer.from('synthetic file')]) {
+          if (!response.destroyed) response.write(chunk);
+        }
+        if (!response.destroyed) response.end();
+      });
+      return req;
+    } },
+  }, fastTimers ? (fn, delay) => setTimeout(fn, Math.min(delay, 20)) : setTimeout)
+    ('server/modules/feishu-tools/feishu-file-input.ts');
+  return { ...module, requests, resolutions, pinned, destroyed };
+}
+const hostFile = { download_url: 'https://files.example.com/file?signature=synthetic', file_id: 'synthetic-file',
+  file_name: 'attachment.txt', mime_type: 'text/plain' };
+const httpOk = httpFixture([{}], (_host, call) => call === 1
+  ? [{ address: '8.8.8.8', family: 4 }] : [{ address: '127.0.0.1', family: 4 }]);
+assert.deepEqual(await httpOk.materializeHostFiles([hostFile]), [{ name: 'attachment.txt',
+  base64: Buffer.from('synthetic file').toString('base64'), mimeType: 'text/plain' }]);
+assert.equal(httpOk.resolutions.length, 1, 'transport cannot re-resolve into a private address');
+assert.equal(httpOk.pinned[0].address, '8.8.8.8');
+for (const addresses of [[], [{ address: '127.0.0.1', family: 4 }],
+  [{ address: '8.8.8.8', family: 4 }, { address: '10.0.0.1', family: 4 }]]) {
+  const test = httpFixture([], addresses);
+  await assert.rejects(test.materializeHostFiles([hostFile]), /file_input_url_invalid/);
+  assert.equal(test.requests.length, 0);
+}
+const ipv6 = httpFixture([{}], [{ address: '2606:4700:4700::1111', family: 6 }]);
+await ipv6.materializeHostFiles([hostFile]); assert.equal(ipv6.requests[0].options.family, 6);
+const redirected = httpFixture([{ status: 302, headers: { location: '/new-file' } }, {}]);
+await redirected.materializeHostFiles([hostFile]);
+assert.deepEqual(redirected.resolutions, ['files.example.com', 'files.example.com']);
+assert.equal(redirected.requests[1].url, 'https://files.example.com/new-file');
+assert.ok(redirected.destroyed.includes(0), 'old redirect body is closed, not drained');
+const rebound = httpFixture([{ status: 302, headers: { location: '/new-file' } }], (_host, count) =>
+  [{ address: count === 1 ? '8.8.8.8' : '10.0.0.1', family: 4 }]);
+await assert.rejects(rebound.materializeHostFiles([hostFile]), /file_input_url_invalid/);
+assert.equal(rebound.requests.length, 1, 'redirect DNS is checked again before opening a socket');
+for (const location of ['http://files.example.com/file', 'https://127.0.0.1/file',
+  'https://user:password@example.com/file', 'file:///private']) {
+  const test = httpFixture([{ status: 302, headers: { location } }]);
+  await assert.rejects(test.materializeHostFiles([hostFile]), /file_input_url_invalid/);
+  assert.equal(test.requests.length, 1);
+}
+const loop = httpFixture(Array.from({ length: 4 }, () => ({ status: 302, headers: { location: '/again' } })));
+await assert.rejects(loop.materializeHostFiles([hostFile]), /file_input_url_invalid/);
+assert.equal(loop.requests.length, 4, 'at most three redirects');
+for (const step of [{ noResponse: true }, { error: true }, { status: 403 }, { complete: false },
+  { headers: { 'content-length': '99999999' } }, { headers: { 'content-length': '-1' } },
+  { headers: { 'content-length': 'abc' } }, { headers: { 'content-length': '1' } },
+  { headers: { 'content-encoding': 'gzip' } }, { aborted: true }, { closed: true }, { bodyError: true }]) {
+  const test = httpFixture([step]);
+  await assert.rejects(test.materializeHostFiles([hostFile]), /file_input_unavailable/);
+}
+const oversized = httpFixture([{ chunks: [Buffer.alloc(10 * 1024 * 1024), Buffer.from('x')] }]);
+await assert.rejects(oversized.materializeHostFiles([hostFile]), /file_input_limit/);
+assert.ok(oversized.destroyed.length);
+const timedOut = httpFixture([{ hang: true }], undefined, true);
+await assert.rejects(timedOut.materializeHostFiles([hostFile]), /file_input_timeout/);
+assert.ok(timedOut.destroyed.length);
+const dnsTimeout = httpFixture([], () => new Promise(() => {}), true);
+await assert.rejects(dnsTimeout.materializeHostFiles([hostFile]), /file_input_timeout/);
+assert.equal(dnsTimeout.requests.length, 0);
+const dnsError = httpFixture([], async () => { throw new Error('private DNS detail'); });
+await assert.rejects(dnsError.materializeHostFiles([hostFile]), (error) => error.message === 'file_input_unavailable');
+const invalidBatch = httpFixture([]);
+await assert.rejects(invalidBatch.materializeHostFiles([hostFile, { ...hostFile, file_name: '../escape' }]));
+await assert.rejects(invalidBatch.materializeHostFiles([hostFile, { ...hostFile, file_name: 'ATTACHMENT.txt' }]));
+await assert.rejects(invalidBatch.materializeHostFiles([{ ...hostFile, unknown: 'field' }]));
+assert.equal(invalidBatch.requests.length, 0, 'entire file manifest is validated before any network access');
+const totalLimit = httpFixture([0, 1, 2].map(() => ({ chunks: [Buffer.alloc(7 * 1024 * 1024)] })));
+await assert.rejects(totalLimit.materializeHostFiles([0, 1, 2].map((index) =>
+  ({ ...hostFile, file_name: `attachment-${index}.bin` }))), /file_input_limit/);
+console.log(JSON.stringify({ ok: true, checks: 'binary round-trip, expiry, account/grant/consent binding, chunk grant isolation, manifest-last, tamper, partial writes; real downloader with HTTPS/DNS doubles: pinning, rebinding, redirects, private addresses, missing/aborted responses, byte limits, DNS/HTTP deadlines, strict whole-batch file input', network: false }));

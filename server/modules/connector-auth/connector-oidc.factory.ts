@@ -217,7 +217,7 @@ export function createConnectorOidc(
           throw new Error('Invalid token');
         }
         ok = true;
-        return { principal: { accountId: payload.sub, scopes }, account };
+        return { principal: { accountId: payload.sub, scopes, grantId: payload.grant_id, clientId: payload.client_id }, account };
       } finally {
         diagnostics.authorization(ok, performance.now() - started, signatureMs || performance.now() - started, storageMs);
       }

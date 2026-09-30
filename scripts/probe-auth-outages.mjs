@@ -46,6 +46,9 @@ const diagnostics = { token() {}, authorization() {} };
 const records = new Map();
 const calls = [];
 let fault;
+let refreshPutFault;
+const refreshPutAttempts = [];
+const revokedGrants = new Set();
 let consumed = 0;
 let revoked = 0;
 function key(model, id) { return `${model}:${id}`; }
@@ -60,11 +63,32 @@ const store = {
   async get(model, id) {
     checkFault('get', model);
     const found = records.get(key(model, id));
+    if ((model === 'Grant' && revokedGrants.has(id)) || revokedGrants.has(found?.grantId)) return undefined;
     return found && found.expiresAt > now() ? structuredClone(found.payload) : undefined;
   },
   async put(model, id, payload, expiresAt, uid, grantId) {
     checkFault('put', model);
-    records.set(key(model, id), { payload: structuredClone(payload), expiresAt, uid, grantId });
+    const recovering = model === 'RefreshToken' && refreshPutFault;
+    if (recovering) {
+      refreshPutAttempts.push(structuredClone({ id, payload, expiresAt, uid, grantId }));
+      if (refreshPutFault === 'permanent' || (refreshPutFault === 'before-once' && refreshPutAttempts.length === 1)) {
+        throw Error(privateMarker);
+      }
+      if (refreshPutFault === 'revoked' && refreshPutAttempts.length === 1) {
+        await store.revokeGrant(grantId); throw Error(privateMarker);
+      }
+    }
+    if ((model === 'Grant' && revokedGrants.has(id)) || revokedGrants.has(grantId)) throw Error(privateMarker);
+    const saved = structuredClone(payload);
+    const previous = records.get(key(model, id));
+    if (previous?.payload.consumed) saved.consumed = previous.payload.consumed;
+    records.set(key(model, id), { payload: saved, expiresAt, uid, grantId });
+    if (recovering && refreshPutAttempts.length === 1 &&
+      ['after-once', 'different-payload', 'consumed'].includes(refreshPutFault)) {
+      if (refreshPutFault === 'different-payload') saved.scope = 'synthetic:conflicting-scope';
+      if (refreshPutFault === 'consumed') saved.consumed = now();
+      throw Error(privateMarker);
+    }
   },
   async consume(model, id) {
     checkFault('consume', model);
@@ -75,6 +99,7 @@ const store = {
   async remove(model, id) { checkFault('remove', model); records.delete(key(model, id)); },
   async revokeGrant(id) {
     checkFault('revokeGrant', 'Grant'); revoked += 1;
+    revokedGrants.add(id);
     for (const [recordKey, record] of records) {
       if (recordKey === key('Grant', id) || record.grantId === id) records.delete(recordKey);
     }
@@ -99,7 +124,8 @@ await new Promise((resolve) => server.once('listening', resolve));
 const tokenUrl = `http://127.0.0.1:${server.address().port}/app/outage-test/oidc/token`;
 
 async function fixture() {
-  fault = undefined; records.clear(); calls.length = 0; consumed = 0; revoked = 0;
+  fault = undefined; refreshPutFault = undefined; refreshPutAttempts.length = 0; revokedGrants.clear();
+  records.clear(); calls.length = 0; consumed = 0; revoked = 0;
   const accountId = 'synthetic-tenant:synthetic-user';
   await store.put('FeishuAccount', accountId, { tenant_key: 'synthetic-tenant', open_id: 'synthetic-user',
     access_token: privateMarker, scope: 'synthetic:read', revoked: false }, now() + 3600);
@@ -163,6 +189,65 @@ try {
     checks += 1;
   }
 
+  // Real provider rotation: old token is consumed before the newly issued token is saved.
+  // Recover a single failed persistence call without replaying consume or changing expiry.
+  for (const scenario of ['before-once', 'after-once']) {
+    const f = await fixture(); refreshPutFault = scenario;
+    const recovered = await refreshRequest(f.refreshToken);
+    assert.equal(recovered.status, 200, `${scenario}: new token persistence recovers`);
+    assert.ok(recovered.body.access_token); assert.ok(recovered.body.refresh_token);
+    assert.notEqual(recovered.body.refresh_token, f.refreshToken);
+    assert.equal(consumed, 1); assert.equal(revoked, 0);
+    assert.equal(refreshPutAttempts.length, scenario === 'before-once' ? 2 : 1);
+    if (scenario === 'before-once') assert.deepEqual(refreshPutAttempts[1], refreshPutAttempts[0],
+      'retry keeps exact ID, payload, absolute expiry and bindings');
+    assert.equal(calls.filter((call) => call.operation === 'consume').length, 1);
+    assert.equal((await service.verifyMcpAuthorization(recovered.body.access_token)).principal.accountId, f.accountId);
+    refreshPutFault = undefined; calls.length = 0;
+    const next = await refreshRequest(recovered.body.refresh_token);
+    assert.equal(next.status, 200, 'next rotation succeeds with recovered token');
+    assert.equal(consumed, 2); assert.equal(revoked, 0);
+    const replay = await refreshRequest(f.refreshToken);
+    assert.equal(replay.status, 400); assert.equal(replay.body.error, 'invalid_grant');
+    assert.ok(revoked > 0, 'old token replay still revokes grant after recovery');
+    await assert.rejects(() => service.verifyMcpAuthorization(next.body.access_token), UnauthorizedException);
+    checks += 1;
+  }
+  for (const scenario of ['permanent', 'different-payload', 'consumed', 'revoked']) {
+    const f = await fixture(); refreshPutFault = scenario;
+    const result = await refreshRequest(f.refreshToken);
+    assert.equal(result.status, 503, `${scenario}: uncertain token persistence fails closed`);
+    assert.equal(result.body.error, 'temporarily_unavailable');
+    assert.equal(result.body.access_token, undefined); assert.equal(result.body.refresh_token, undefined);
+    assert.equal(consumed, 1, 'predecessor consume never repeats');
+    assert.equal(refreshPutAttempts.length, ['different-payload', 'consumed'].includes(scenario) ? 1 : 2,
+      'conflicting/consumed record cannot be overwritten; other recovery has at most one retry');
+    if (scenario === 'revoked') {
+      assert.ok(revokedGrants.has(f.grantId));
+      assert.equal(await store.get('Grant', f.grantId), undefined);
+      assert.equal(await store.get('RefreshToken', refreshPutAttempts[0].id), undefined,
+        'revocation tombstone prevents delayed retry from resurrecting token');
+    } else assert.equal(revoked, 0, 'a storage failure alone does not revoke authorization');
+    refreshPutFault = undefined;
+    const replay = await refreshRequest(f.refreshToken);
+    assert.equal(replay.status, 400, 'unrecoverable rotation never reuses consumed predecessor');
+    checks += 1;
+  }
+
+  const unreadable = await fixture(); refreshPutFault = 'before-once';
+  fault = { operation: 'get', model: 'RefreshToken', occurrence: 2 };
+  const unreadableResult = await refreshRequest(unreadable.refreshToken);
+  assert.equal(unreadableResult.status, 503);
+  assert.equal(refreshPutAttempts.length, 1, 'failed readback cannot trigger blind put retry');
+  assert.equal(consumed, 1); assert.equal(revoked, 0); checks += 1;
+
+  // Other model mutations retain their single-attempt behavior.
+  await fixture(); fault = { operation: 'put', model: 'Grant', occurrence: 1 };
+  await assert.rejects(() => connectorAdapter(store)('Grant').upsert('synthetic-new-grant', {}, 60),
+    ConnectorAuthUnavailableError);
+  assert.equal(calls.filter((call) => call.operation === 'put' && call.model === 'Grant').length, 1);
+  checks += 1;
+
   const f = await fixture();
   const successful = await refreshRequest(f.refreshToken);
   assert.equal(successful.status, 200);
@@ -196,7 +281,7 @@ try {
   assert.equal(calls.filter((call) => call.operation === 'consume').length, 1);
   assert.equal(revoked, 0);
   checks += 1;
-  console.log(`PASS: ${checks} auth outage/invalidity scenarios; OAuth 503, unchanged pre-consumption records, recovery, MCP service 503, revocation and replay enforcement.`);
+  console.log(`PASS: ${checks} auth outage/invalidity scenarios; pre-consumption recovery, bounded exact-payload refresh persistence recovery, lost acknowledgements, no consume retry, OAuth/MCP 503, revocation and replay enforcement.`);
 } finally {
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));

@@ -5,7 +5,7 @@ const STORAGE_MODELS = [
   'ClientCredentials', 'DeviceCode', 'Grant', 'IdToken', 'Interaction',
   'RefreshToken', 'ReplayDetection', 'Session', 'PushedAuthorizationRequest',
   'FeishuAccount', 'FeishuState', 'Consent', 'FeishuLoginState',
-  'FeishuLoginResult', 'ConsentCSRF', 'FeishuAction',
+  'FeishuLoginResult', 'ConsentCSRF', 'FeishuAction', 'FeishuFile', 'FeishuFileChunk',
 ] as const;
 
 const storageModelSchema = z.enum(STORAGE_MODELS);

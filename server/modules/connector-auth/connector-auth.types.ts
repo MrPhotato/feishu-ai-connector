@@ -27,6 +27,8 @@ export interface ConnectorAuthConfig {
 export interface McpPrincipal {
   accountId: string;
   scopes: string[];
+  grantId?: string;
+  clientId?: string;
 }
 
 /** Server-only, single HTTP request context. Never serialize or cache these upstream credentials. */

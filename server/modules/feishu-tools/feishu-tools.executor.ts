@@ -16,6 +16,10 @@ import { parseFeishuTaskRequest } from './feishu-task-tools.contract';
 import type { FeishuTaskRequest } from './feishu-task-tools.contract';
 import { parseFeishuNativeRequest } from './feishu-task-tools.native';
 import type { FeishuNativeRequest } from './feishu-task-tools.native';
+import { buildAttachmentPlan, executeAttachmentDownload } from './feishu-attachments';
+import { materializeHostFiles } from './feishu-file-input';
+import { publishFile } from './feishu-file-delivery';
+import type { FeishuFileLink } from '@shared/api.interface';
 
 interface FeishuToolsStore {
   get(model: string, key: string): Promise<Record<string, unknown> | undefined>;
@@ -107,6 +111,27 @@ class FeishuToolExecutor {
       if (!principal.accountId || !principal.scopes.some((scope: string): boolean =>
         scope === 'feishu.read' || scope === 'feishu.write')) return failure('connector_scope_missing', '请先连接并授权。');
       if (request.task === 'native_catalog') return await discoverNative(request);
+      if (request.task === 'download_attachment') {
+        const plan = buildAttachmentPlan(request.arguments);
+        const account = await this.cliAccount(principal, 'read', plan.scopeGroups);
+        if ('ok' in account) return account as FeishuToolResult;
+        const result: FeishuToolResult = await executeAttachmentDownload(plan, async (argv, options) => {
+          return this.nativeRunner(argv, {
+            appId: this.credentials().clientId, accessToken: String(account.access_token),
+          }, { ...options, collectFiles: plan.collectFiles });
+        });
+        if (result.ok && isObject(result.data) && Array.isArray(result.data.files)) {
+          const links: FeishuFileLink[] = [];
+          for (const file of result.data.files) {
+            if (!isObject(file) || typeof file.name !== 'string' || typeof file.dataBase64 !== 'string' ||
+              typeof file.byteLength !== 'number') throw new Error('file_delivery_invalid');
+            links.push(await publishFile(this.store, principal, { name: file.name, dataBase64: file.dataBase64,
+              byteLength: file.byteLength, mimeType: typeof file.mimeType === 'string' ? file.mimeType : undefined }));
+          }
+          result.data.files = links;
+        }
+        return sanitize(result, [String(account.access_token), String(account.refresh_token ?? '')]) as FeishuToolResult;
+      }
       if (request.task === 'skill_read') {
         const reply: FeishuCliReply = await this.nativeRunner(['skills', 'read', request.arguments.skill, '--json']);
         if (reply.exitCode !== 0 || !isObject(reply.output) || typeof reply.output.skill !== 'string' ||
@@ -120,16 +145,24 @@ class FeishuToolExecutor {
       const plan = await buildNativePlan(request);
       const account: Record<string, unknown> | FeishuToolResult = await this.cliAccount(principal, plan.mode, plan.scopeGroups);
       if ('ok' in account) return account as FeishuToolResult;
+      const inputFiles = await materializeHostFiles(request.arguments.files);
       const action = async (): Promise<FeishuToolResult> => {
         const reply: FeishuCliReply = await this.nativeRunner(plan.argv, {
           appId: this.credentials().clientId, accessToken: String(account.access_token),
-        });
-        if (reply.exitCode !== 0 || !isObject(reply.output) || reply.output.ok !== true) return cliFailure(reply);
+        }, { ...plan.runnerOptions, files: inputFiles });
+        if (reply.exitCode !== 0 || (isObject(reply.output) && reply.output.ok === false)) return cliFailure(reply);
+        const files: FeishuFileLink[] = [];
+        for (const file of reply.files ?? []) files.push(await publishFile(this.store, principal, file));
+        const result: unknown = isObject(reply.output) && reply.output.ok === true ? reply.output.data : reply.output;
         return { ok: true, data: { backend: 'official-cli', operation: request.arguments.operation,
-          result: sanitize(reply.output.data, [String(account.access_token), String(account.refresh_token ?? '')]) } };
+          result: sanitize(result, [String(account.access_token), String(account.refresh_token ?? '')]),
+          ...(files.length ? { files } : {}) } };
       };
+      const actionArguments: Record<string, unknown> = { ...request.arguments.arguments,
+        ...(inputFiles.length ? { inputFiles: inputFiles.map((file) => ({ name: file.name,
+          sha256: createHash('sha256').update(Buffer.from(file.base64, 'base64')).digest('hex') })) } : {}) };
       const result: FeishuToolResult = plan.mode === 'write'
-        ? await this.writeOnce(principal.accountId, request.arguments.operation, request.arguments.arguments, action)
+        ? await this.writeOnce(principal.accountId, request.arguments.operation, actionArguments, action)
         : await action();
       return sanitize(result, [String(account.access_token), String(account.refresh_token ?? '')]) as FeishuToolResult;
     } catch (error: unknown) { return this.nativeFailure(error); }
@@ -138,16 +171,36 @@ class FeishuToolExecutor {
   private nativeFailure(error: unknown): FeishuToolResult {
     if (error instanceof z.ZodError) return failure('invalid_arguments',
       error.issues.slice(0, 4).map((issue): string => `${issue.path.join('.')}: ${issue.message}`).join('；'));
-    const safeCodes: string[] = ['native_confirmation_required', 'native_arguments_invalid',
-      'native_operation_not_available', 'native_command_invalid', 'cli_catalog_invalid',
+      const safeCodes: string[] = ['native_confirmation_required', 'native_arguments_invalid',
+        'native_operation_not_available', 'native_command_invalid', 'cli_catalog_invalid',
+        'native_execution_restricted', 'native_flag_invalid', 'native_file_reference_invalid', 'native_inline_reference_invalid',
+        'file_input_url_invalid', 'file_input_timeout', 'file_input_unavailable', 'file_input_name_invalid', 'file_input_limit',
+        'file_delivery_invalid', 'cli_file_limit', 'cli_file_input_invalid', 'cli_file_reference_invalid',
+        'cli_file_output_invalid', 'cli_file_sensitive_output',
       'opened_range_exceeds_90_days', 'document_reference_invalid', 'subject_must_be_one_line',
       'cli_arguments_limit', 'cli_timeout', 'cli_output_limit', 'cli_runtime_unavailable',
       'cli_cleanup_boundary', 'cli_invalid_output', 'cli_credentials_invalid'];
     const code: string = error instanceof Error && safeCodes.includes(error.message) ? error.message : 'cli_unavailable';
     const messages: Record<string, string> = {
-      native_confirmation_required: '该操作要求明确确认后再传 arguments.yes=true；本次未执行。',
-      native_arguments_invalid: '参数不符合官方定义，请读取该操作的 native_catalog 参数。',
-      native_operation_not_available: '该原生操作未开放，或使用了错误的读写入口。',
+        native_confirmation_required: '该操作要求明确确认；请按 native_catalog 指定的 yes 或 confirmed 字段传入 true。本次未执行。',
+        native_arguments_invalid: '参数不符合官方定义，请读取该操作的 native_catalog 参数。',
+        native_operation_not_available: '该原生操作未开放，或使用了错误的读写入口。',
+        native_execution_restricted: '该命令依赖当前云端未提供的身份或运行环境；请读取 native_catalog 中的 availability 和 reason。',
+        native_flag_invalid: '参数名称或类型不正确，请使用该操作目录中的 flags 定义。',
+        native_file_reference_invalid: '输入文件请通过 files 提供并引用 input/<file_name>；输出路径应位于 output/。',
+        native_inline_reference_invalid: '此参数含有需要本地资源读取的内容；请按目录使用已支持的文件参数，不能引用服务器本地路径。',
+        file_input_url_invalid: '无法读取这个文件地址；请使用 ChatGPT 提供的 HTTPS 文件链接。',
+        file_input_timeout: '读取上传文件超时，本次 CLI 操作尚未执行。请重新提供文件后再试。',
+        file_input_unavailable: '上传文件链接无法读取，本次 CLI 操作尚未执行。请重新提供文件。',
+        file_input_name_invalid: '文件名无效或重复；请使用不含路径的不同文件名。',
+        file_input_limit: '上传文件超限：每个文件最多 10 MiB、每次最多 20 个文件且总计 20 MiB。',
+        cli_file_limit: '本次文件超过传输限制：每个文件最多 10 MiB、总计 20 MiB、最多 20 个文件。',
+        cli_file_input_invalid: '文件输入格式无效，本次未执行。请重新提供文件。',
+        cli_file_reference_invalid: '参数引用了未提供的输入文件或无效输出路径，请核对 files 与 input/、output/ 路径。',
+        cli_file_output_invalid: '命令产生的文件无法安全交付，未返回下载链接。',
+        cli_file_sensitive_output: '产物中检测到运行凭据或配置，未返回该文件。',
+        file_delivery_invalid: '文件未能完成交付。业务写入可能已完成，请先核对结果，不要重复写入。',
+        cli_timeout: 'CLI 调用超过执行时限；长时间导出或写入请先查询任务状态，不要直接重复提交。',
       opened_range_exceeds_90_days: '按打开时间搜索时，请明确起始时间并将每段范围限制在 90 天以内。',
       document_reference_invalid: '请提供有效飞书 Docx/Wiki 链接或 token。',
       subject_must_be_one_line: '邮件主题不能包含换行。',

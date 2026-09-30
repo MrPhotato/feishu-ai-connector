@@ -58,6 +58,7 @@ const interceptor = new LoggingInterceptor(
 );
 let authMode = 'valid';
 let executorFails = false;
+let downloadMode = 'valid';
 const controller = new FeishuToolsController({
   getPublicUrl: () => 'https://example.invalid/app/test',
   verifyMcpAuthorization: async () => {
@@ -68,6 +69,12 @@ const controller = new FeishuToolsController({
       account: { access_token: marker } };
   },
 }, {
+  downloadFile: async (ticket) => {
+    assert.equal(ticket, marker);
+    if (downloadMode === 'failure') throw new Error(marker);
+    if (downloadMode === 'expired') return undefined;
+    return { name: '测试附件.txt', mimeType: 'text/plain', bytes: Buffer.from(marker) };
+  },
   forRequest: () => {
     if (executorFails) throw new Error(marker);
     return { catalog: () => ({ operations: [] }), execute: async () => ({ ok: true, data: marker }),
@@ -77,6 +84,11 @@ const controller = new FeishuToolsController({
 const app = express();
 app.use(express.json());
 app.all('*', connectorPrivacyMiddleware);
+app.get('/mcp/files/download', (req, res) => {
+  const context = { getType: () => 'http', switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }) };
+  interceptor.intercept(context, { handle: () => from(controller.download(req, res)) })
+    .subscribe({ error: () => { if (!res.headersSent) res.status(500).end(); } });
+});
 app.all('/mcp', (req, res) => {
   const context = { getType: () => 'http', switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }) };
   interceptor.intercept(context, { handle: () => from(req.method === 'POST'
@@ -111,6 +123,18 @@ async function request(method, params, { httpMethod = 'POST', authorization = tr
   return { response, text, record };
 }
 try {
+  step = 'file_download_privacy';
+  for (const [mode, status] of [['valid', 200], ['expired', 410], ['failure', 503]]) {
+    downloadMode = mode;
+    const response = await fetch(`${base}/mcp/files/download?ticket=${marker}`);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    const body = await response.text();
+    assert.equal(body.includes(marker), mode === 'valid');
+    if (mode === 'valid') assert.ok(response.headers.get('content-disposition').startsWith('attachment;'));
+  }
   process.env.CONNECTOR_NATIVE_CLI_ENABLED = 'true';
   step = 'initialize';
   let result = await request('initialize', { protocolVersion: '2025-03-26', capabilities: {},
@@ -120,9 +144,9 @@ try {
   assert.ok(result.record.durationMs >= 10, 'Includes awaited authentication time');
   step = 'tools_list';
   result = await request('tools/list', {});
-  assert.equal(JSON.parse(result.text).result.tools.length, 16);
+  assert.equal(JSON.parse(result.text).result.tools.length, 17);
   assert.equal(result.record.nativeEnabled, true);
-  assert.equal(result.record.toolCount, 16);
+  assert.equal(result.record.toolCount, 17);
   assert.equal(result.record.method, 'tools_list');
   assert.equal(result.record.failureStage, 'none');
   step = 'notification';

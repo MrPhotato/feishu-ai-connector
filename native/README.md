@@ -62,8 +62,11 @@ UAT scopes；飞书仍会执行应用资格及资源权限检查。CLI 不拥有
 
 严禁输出或记录 child env、完整 argv、stdout/stderr 的原始异常对象。
 argv 只由注册的结构化操作构造，`spawn`/`execFile` 使用固定绝对二进制路径、`shell:false`。
-文本参数采用独立 `--flag=value`，不拼 shell；阻止自由 argv、`api`、auth/config/profile/update、
-apps/application/event 等管理入口，以及任意文件路径、@file、上传下载和自定义输出路径。
+文本参数采用独立 argv 或 `--flag=value`，不拼 shell；阻止自由 argv、任意 API URL、
+凭据和宿主配置修改、持续监听进程，以及任意本地文件路径。目录中的受支持短任务按精确 schema 执行；
+不能仅因属于某个业务域，就把该域全部命令视为已开放。
+文件输入只允许本次 `files` 映射出的 `input/<name>`，输出只收集私有 `output/` 中通过检查的普通文件；
+不得使用符号链接、硬链接、路径穿越或引用隔离目录之外的内容。非文件参数也不能通过 `@file` 绕过文件合同。
 含 HTML 的官方写信快捷命令支持自动读取本地图片，因此还必须限制正文中的本地引用，并维持空的私有 cwd。
 超时、输出上限和异常必须失败关闭；写入结果不确定时不能自动重试。父进程等待 child 退出后清理独立目录。
 
@@ -83,23 +86,48 @@ node native/generate-catalog.mjs --binary <absolute-official-binary> --output na
 ```
 
 生成器在空的独立配置目录、无 token 环境中验证版本，然后读取官方内置 schema。
-当前静态快照为 **240 项 user 业务 JSON 方法**（97 read、143 write，其中 34 high-risk-write），
-来自本版本 strict-user 目录 251 项，保留每个方法完整 `inputSchema/outputSchema/_meta`，附加：
+目录生成器读取本版本 `schema` 和完整可见 `--help` 命令树，共 **818 个入口：251 个原生 API、532 个快捷命令、35 个辅助命令**。
+它保留受限入口的发现信息，执行前必须检查 `availability`；完整发现不等于全部已适配、已授权或已验收。
+0.4.0 固定快照为 **743 个 executable、75 个仅发现**：58 个 `host_managed`、10 个 `identity_restricted`、
+6 个 `persistent_job_required`、1 个 `unknown_risk`。具体限制、替代方式及禁用参数分别见
+`reasonDetail`、`alternative`、`blockedFlags`；这些状态不是对真实业务逐项验收的结论。
+原生 API 保留官方 `inputSchema/outputSchema/_meta`，快捷命令保留官方帮助与允许的 flag 类型，并附加：
 
-- `command`：规范的 3 段 argv；`schemaPath`：点分路径；`service`：业务域。
+- `command`：注册的规范 argv 路径（原生 API 为 3 段）；`schemaPath`：点分路径；`service`：业务域。
 - `mode`：仅官方 risk=read 归 read，其余保守归 write。明确的只读搜索可由单独快捷工具正确标注。
 - `scopeGroups`：组间 AND、组内 OR。官方 `required_scopes` 非空时取全部 AND；为空才用 `scopes` 候选 OR。
+- `kind`：`api` / `shortcut` / `utility`；`availability` 与 `reason` 描述当前执行边界。
+- `scopeValidation`：`declared` 表示有官方 schema 权限声明；`upstream` 表示快捷帮助未提供完整 scope 清单，最终由飞书接口校验，不能据此声称无需权限。
 - `requiresExplicitConfirmation`：high-risk-write。该类 schema 的顶层 `yes` 是 CLI 确认门禁，
   不是业务 API 字段；不得因为模型写了 userIntent 就自动追加 `--yes`。
 
 原始 `_meta.scopes/required_scopes/access_tokens/risk/danger/doc_url` 不改写。
 JSON 方法的 `params` / `data` 必须按原 schema 验证后 JSON.stringify 成单一 flag 值；
 不接收用户自定义 flags，顶层 `yes` 由独立确认合同处理。
-当前排除清单随快照提供：2 个二进制上传、7 个无显式 user 身份方法、2 个下载 URL 方法。
-最后两项虽不一定写本地文件，本版仍保守排除，不能声称它们在 CLI 不可用。
+当前目录纳入文件上传和附件下载 URL 方法，并发现高层 `+shortcut`。原生 API 的 `params/data/file/yes`
+与快捷命令的 `flags` 是不同输入合同，必须使用精确条目返回的 schema；不得自行拼接未注册 flag。
+宿主配置/凭据命令、持续进程、仅 bot 身份或未知风险等条目保留限制状态。参数未受支持、
+文件超过限额或超时仍会失败，不能把目录标记 `executable` 等同于每个参数组合都已验收。
 
-该快照只覆盖 CLI 的 **原生 API 方法目录**，不包含全部高层 `+shortcut`；例如 Docx/Base
-增强快捷指令需要各自结构化适配。不能把“240 方法可发现”称为“所有飞书能力已授权或验收”。
+## 文件输入与交付
+
+MCP 原生读写工具声明顶层 `files`，采用 OpenAI 文件输入字段 `download_url`、`file_id`、
+可选 `mime_type`、`file_name`。URL 下载不携带飞书凭据；每次跳转都检查目标地址，拒绝内网地址，
+并固定连接到已检查的 IP。客户端文件名映射到私有 `input/<name>`，无名称时使用 `file-1.bin` 等。
+`file_id` 是宿主文件标识，不是飞书上传后的文件 token。
+
+子进程完成后先收集、校验 `output/` 文件，再清理整个临时目录。单文件最多 10 MiB，
+每次输入或输出合计最多 20 MiB、最多 20 件；运行上限仍为 25 秒，JSON/文本输出另有 4 MiB 上限。
+不把二进制 base64 塞进 MCP 文本；业务层把已确认文件转换为元数据、短时下载链接与 `resource_link`。
+
+`feishu_download_attachment` 为常见来源提供强类型适配：邮件固定本人邮箱，检查每个请求附件的成功/失败；
+聊天和 Drive 使用固定输出路径；Docx 支持 PDF、DOCX、Markdown。Markdown 的 `.md` 后缀来自
+官方 `drive_export_common.go`。Docx 异步导出可能超过进程预算，未完成时不返回虚假的成功。
+
+二进制文件按块存入现有加密存储，清单在全部块写入后发布，15 分钟后失效。下载时重新检查
+账号、Grant、Consent 绑定/有效期/撤销，并核对文件长度与摘要。下载 ticket 是 bearer 凭证：
+持链接者在有效期且原授权有效时可下载，因此不得公开转发或写入日志。邮件官方链接的有效期和
+权限由飞书控制，不能套用连接器的 15 分钟期限，也不能声称已下载其内容。
 
 精确样例：
 
@@ -114,6 +142,9 @@ JSON 方法的 `params` / `data` 必须按原 schema 验证后 JSON.stringify �
 ```text
 node native/probe-native.mjs native/test-output/lark-cli.exe
 node node_modules/typescript/bin/tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck native/bridge-contract.ts
+node scripts/probe-feishu-attachments.mjs
+node scripts/test-feishu-cli-files.mjs
+node scripts/test-feishu-file-delivery.mjs
 ```
 
 检查固定资产、错误 digest 拒绝、隔离环境（包括真实合成 child）、scope AND/OR、目录过滤、

@@ -72,6 +72,14 @@ export interface FeishuToolResult {
   error?: FeishuToolError;
 }
 
+export interface FeishuFileLink {
+  name: string;
+  mimeType: string;
+  byteLength: number;
+  downloadUrl: string;
+  expiresAt: string;
+}
+
 export interface ConnectorStatus {
   configured: boolean;
   mcpUrl: string;
