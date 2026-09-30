@@ -105,7 +105,7 @@ function checkBulkInsert(commands, rowsReturned = commands.length, ciphers = [])
   };
 }
 
-for (const count of [1, 8]) {
+for (const count of [1, 8, 16]) {
   const commands = Array.from({ length: count }, (_, index) => put(index));
   const ciphers = [];
   const f = fixture([tombstone([grantHash]), checkBulkInsert(commands, count, ciphers), tombstone([grantHash]),
@@ -144,6 +144,11 @@ reads.done();
 const absent = fixture([() => []]);
 assert.deepEqual(await absent.repository.executeFileBatch([get(9)]), [{ ok: true, record: undefined }]);
 absent.done();
+const fullRead = fixture([() => Array.from({ length: 16 }, (_, index) => driverRow(row(index))).reverse(),
+  tombstone([grantHash])]);
+assert.deepEqual((await fullRead.repository.executeFileBatch(Array.from({ length: 16 }, (_, index) => get(index))))
+  .map((item) => item.record.index), Array.from({ length: 16 }, (_, index) => index));
+fullRead.done();
 
 // No writes before an existing revoke; a revoke racing after insertion triggers bounded cleanup.
 const beforeRevoke = fixture([tombstone([grantHash], [['revoked']])]);
@@ -164,7 +169,7 @@ await assert.rejects(bindingConflict.repository.executeFileBatch([put(0), put(1)
 bindingConflict.done();
 
 const noSql = fixture([]);
-for (const invalid of [null, [], Array.from({ length: 9 }, (_, index) => get(index)), [get(0), get(0)],
+for (const invalid of [null, [], Array.from({ length: 17 }, (_, index) => get(index)), [get(0), get(0)],
   [get(0), put(1)], [{ ...get(0), model: 'Grant' }], [{ operation: 'consume', model, key: 'synthetic' }],
   [{ ...get(0), unknown: 'reject' }], [put(0, { payload: {} })],
   [put(0), put(1, { grantId: 'different' })], [put(0), put(1, { payload: { grantId: 'different' } })],

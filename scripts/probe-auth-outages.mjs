@@ -12,6 +12,8 @@ import ts from 'typescript';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const requireDependency = createRequire(import.meta.url);
 const cache = new Map();
+let recoveryElapsed = 0;
+const recoverySleeps = [];
 function loadTs(file) {
   const absolute = path.resolve(file);
   if (cache.has(absolute)) return cache.get(absolute).exports;
@@ -21,9 +23,12 @@ function loadTs(file) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS,
       esModuleInterop: true, experimentalDecorators: true }, fileName: absolute,
   }).outputText;
-  const localRequire = (specifier) => specifier.startsWith('.')
-    ? loadTs(path.resolve(path.dirname(absolute), `${specifier}.ts`)) : requireDependency(specifier);
-  new Function('require', 'module', 'exports', compiled)(localRequire, loaded, loaded.exports);
+  const isAdapter = absolute.endsWith('connector-oidc.adapter.ts');
+  const localRequire = (specifier) => isAdapter && specifier === 'node:timers/promises'
+    ? { setTimeout: async (ms) => { recoverySleeps.push(ms); recoveryElapsed += ms; } }
+    : specifier.startsWith('.') ? loadTs(path.resolve(path.dirname(absolute), `${specifier}.ts`)) : requireDependency(specifier);
+  new Function('require', 'module', 'exports', 'performance', compiled)(localRequire, loaded, loaded.exports,
+    isAdapter ? { now: () => recoveryElapsed } : performance);
   return loaded.exports;
 }
 const authPath = path.join(root, 'server/modules/connector-auth');
@@ -31,6 +36,8 @@ const { createConnectorOidc } = loadTs(path.join(authPath, 'connector-oidc.facto
 const { ConnectorAuthUnavailableError } = loadTs(path.join(authPath, 'connector-auth.unavailable.ts'));
 const { ConnectorAuthService } = loadTs(path.join(authPath, 'connector-auth.service.ts'));
 const { connectorAdapter } = loadTs(path.join(authPath, 'connector-oidc.adapter.ts'));
+const { ConnectorStorageUnavailableError } = loadTs(path.join(root,
+  'server/modules/connector-auth-storage/connector-auth-storage.service.ts'));
 const { ServiceUnavailableException, UnauthorizedException } = requireDependency('@nestjs/common');
 const privateMarker = `synthetic-private-${randomBytes(12).toString('hex')}`;
 const now = () => Math.floor(Date.now() / 1000);
@@ -48,6 +55,7 @@ const calls = [];
 let fault;
 let refreshPutFault;
 const refreshPutAttempts = [];
+let refreshReadAttempts = 0;
 const revokedGrants = new Set();
 let consumed = 0;
 let revoked = 0;
@@ -62,6 +70,18 @@ function checkFault(operation, model) {
 const store = {
   async get(model, id) {
     checkFault('get', model);
+    if (model === 'RefreshToken' && refreshPutFault && id === refreshPutAttempts[0]?.id) {
+      refreshReadAttempts++;
+      if (refreshPutFault === 'put429-read429' && refreshReadAttempts === 1) {
+        throw new ConnectorStorageUnavailableError('http', 429);
+      }
+      if (refreshPutFault === 'lost-ack-read-outages' && refreshReadAttempts <= 2) {
+        throw new ConnectorStorageUnavailableError(refreshReadAttempts === 1 ? 'network_timeout' : 'http', 503);
+      }
+      if (refreshPutFault === 'read-permanent') throw new ConnectorStorageUnavailableError('network');
+      if (refreshPutFault === 'read-config') throw new ConnectorStorageUnavailableError('config');
+      if (refreshPutFault === 'budget-after-read') recoveryElapsed += 20000;
+    }
     const found = records.get(key(model, id));
     if ((model === 'Grant' && revokedGrants.has(id)) || revokedGrants.has(found?.grantId)) return undefined;
     return found && found.expiresAt > now() ? structuredClone(found.payload) : undefined;
@@ -71,11 +91,21 @@ const store = {
     const recovering = model === 'RefreshToken' && refreshPutFault;
     if (recovering) {
       refreshPutAttempts.push(structuredClone({ id, payload, expiresAt, uid, grantId }));
-      if (refreshPutFault === 'permanent' || (refreshPutFault === 'before-once' && refreshPutAttempts.length === 1)) {
-        throw Error(privateMarker);
+      if (refreshPutFault === 'permanent') throw new ConnectorStorageUnavailableError('http', 503);
+      if (refreshPutAttempts.length === 1 && refreshPutFault.startsWith('nonretry-')) {
+        const name = refreshPutFault.slice('nonretry-'.length);
+        if (name === 'unknown') throw Error(privateMarker);
+        if (/^\d+$/u.test(name)) throw new ConnectorStorageUnavailableError('http', Number(name));
+        throw new ConnectorStorageUnavailableError(name);
+      }
+      if (refreshPutAttempts.length === 1 && ['before-once', 'put429-read429', 'read-permanent',
+        'read-config', 'budget-before-read', 'budget-after-read'].includes(refreshPutFault)) {
+        if (refreshPutFault === 'budget-before-read') recoveryElapsed += 19500;
+        throw new ConnectorStorageUnavailableError(refreshPutFault === 'put429-read429' ? 'http' : 'network_timeout',
+          refreshPutFault === 'put429-read429' ? 429 : 0);
       }
       if (refreshPutFault === 'revoked' && refreshPutAttempts.length === 1) {
-        await store.revokeGrant(grantId); throw Error(privateMarker);
+        await store.revokeGrant(grantId); throw new ConnectorStorageUnavailableError('network_timeout');
       }
     }
     if ((model === 'Grant' && revokedGrants.has(id)) || revokedGrants.has(grantId)) throw Error(privateMarker);
@@ -84,10 +114,10 @@ const store = {
     if (previous?.payload.consumed) saved.consumed = previous.payload.consumed;
     records.set(key(model, id), { payload: saved, expiresAt, uid, grantId });
     if (recovering && refreshPutAttempts.length === 1 &&
-      ['after-once', 'different-payload', 'consumed'].includes(refreshPutFault)) {
+      ['after-once', 'lost-ack-read-outages', 'different-payload', 'consumed'].includes(refreshPutFault)) {
       if (refreshPutFault === 'different-payload') saved.scope = 'synthetic:conflicting-scope';
       if (refreshPutFault === 'consumed') saved.consumed = now();
-      throw Error(privateMarker);
+      throw new ConnectorStorageUnavailableError('network_timeout');
     }
   },
   async consume(model, id) {
@@ -125,6 +155,7 @@ const tokenUrl = `http://127.0.0.1:${server.address().port}/app/outage-test/oidc
 
 async function fixture() {
   fault = undefined; refreshPutFault = undefined; refreshPutAttempts.length = 0; revokedGrants.clear();
+  refreshReadAttempts = 0; recoveryElapsed = 0; recoverySleeps.length = 0;
   records.clear(); calls.length = 0; consumed = 0; revoked = 0;
   const accountId = 'synthetic-tenant:synthetic-user';
   await store.put('FeishuAccount', accountId, { tenant_key: 'synthetic-tenant', open_id: 'synthetic-user',
@@ -190,17 +221,22 @@ try {
   }
 
   // Real provider rotation: old token is consumed before the newly issued token is saved.
-  // Recover a single failed persistence call without replaying consume or changing expiry.
-  for (const scenario of ['before-once', 'after-once']) {
+  // Recover classified write failures and even temporary readback failures without
+  // replaying consume, changing the new token ID, extending expiry or weakening reuse detection.
+  for (const scenario of ['before-once', 'after-once', 'put429-read429', 'lost-ack-read-outages']) {
     const f = await fixture(); refreshPutFault = scenario;
     const recovered = await refreshRequest(f.refreshToken);
     assert.equal(recovered.status, 200, `${scenario}: new token persistence recovers`);
     assert.ok(recovered.body.access_token); assert.ok(recovered.body.refresh_token);
     assert.notEqual(recovered.body.refresh_token, f.refreshToken);
     assert.equal(consumed, 1); assert.equal(revoked, 0);
-    assert.equal(refreshPutAttempts.length, scenario === 'before-once' ? 2 : 1);
-    if (scenario === 'before-once') assert.deepEqual(refreshPutAttempts[1], refreshPutAttempts[0],
+    const expectedPuts = ['before-once', 'put429-read429'].includes(scenario) ? 2 : 1;
+    assert.equal(refreshPutAttempts.length, expectedPuts);
+    if (expectedPuts === 2) assert.deepEqual(refreshPutAttempts[1], refreshPutAttempts[0],
       'retry keeps exact ID, payload, absolute expiry and bindings');
+    assert.equal(recoverySleeps.length, scenario === 'lost-ack-read-outages' ? 3 : scenario === 'put429-read429' ? 2 : 1);
+    recoverySleeps.forEach((ms, index) => assert.ok(ms >= 500 * (2 ** index) && ms <= 500 * (2 ** index) + 250,
+      'all recovery reads use exponential backoff with bounded jitter'));
     assert.equal(calls.filter((call) => call.operation === 'consume').length, 1);
     assert.equal((await service.verifyMcpAuthorization(recovered.body.access_token)).principal.accountId, f.accountId);
     refreshPutFault = undefined; calls.length = 0;
@@ -213,15 +249,20 @@ try {
     await assert.rejects(() => service.verifyMcpAuthorization(next.body.access_token), UnauthorizedException);
     checks += 1;
   }
-  for (const scenario of ['permanent', 'different-payload', 'consumed', 'revoked']) {
+  for (const scenario of ['permanent', 'different-payload', 'consumed', 'revoked', 'read-permanent',
+    'read-config', 'budget-before-read', 'budget-after-read']) {
     const f = await fixture(); refreshPutFault = scenario;
     const result = await refreshRequest(f.refreshToken);
     assert.equal(result.status, 503, `${scenario}: uncertain token persistence fails closed`);
     assert.equal(result.body.error, 'temporarily_unavailable');
     assert.equal(result.body.access_token, undefined); assert.equal(result.body.refresh_token, undefined);
     assert.equal(consumed, 1, 'predecessor consume never repeats');
-    assert.equal(refreshPutAttempts.length, ['different-payload', 'consumed'].includes(scenario) ? 1 : 2,
-      'conflicting/consumed record cannot be overwritten; other recovery has at most one retry');
+    assert.equal(refreshPutAttempts.length, scenario === 'permanent' ? 5 : scenario === 'revoked' ? 2 : 1,
+      'only a confirmed missing token permits another identical put; temporary failure has at most five rounds');
+    assert.ok(recoverySleeps.length <= 4);
+    if (scenario === 'read-permanent') assert.equal(refreshReadAttempts, 4);
+    if (scenario === 'budget-before-read') { assert.equal(refreshReadAttempts, 0); assert.equal(recoverySleeps.length, 0); }
+    if (scenario === 'budget-after-read') assert.equal(refreshReadAttempts, 1, 'no put starts after the 20s budget');
     if (scenario === 'revoked') {
       assert.ok(revokedGrants.has(f.grantId));
       assert.equal(await store.get('Grant', f.grantId), undefined);
@@ -240,6 +281,19 @@ try {
   assert.equal(unreadableResult.status, 503);
   assert.equal(refreshPutAttempts.length, 1, 'failed readback cannot trigger blind put retry');
   assert.equal(consumed, 1); assert.equal(revoked, 0); checks += 1;
+
+  for (const reason of ['validation', 'config', 'response_invalid', '400', '401', '403', '404', 'unknown']) {
+    const f = await fixture(); refreshPutFault = `nonretry-${reason}`;
+    const result = await refreshRequest(f.refreshToken);
+    assert.equal(result.status, 503); assert.equal(result.body.error, 'temporarily_unavailable');
+    assert.equal(consumed, 1); assert.equal(revoked, 0);
+    assert.equal(refreshPutAttempts.length, 1); assert.equal(refreshReadAttempts, 0);
+    assert.equal(recoverySleeps.length, 0, 'unclassified or permanent failures are never retried'); checks++;
+  }
+  await fixture();
+  await assert.rejects(() => connectorAdapter(store)('RefreshToken').upsert('synthetic-expired', {}, 0),
+    ConnectorAuthUnavailableError);
+  assert.equal(calls.filter((call) => call.operation === 'put').length, 0, 'expired artifact is never persisted'); checks++;
 
   // Other model mutations retain their single-attempt behavior.
   await fixture(); fault = { operation: 'put', model: 'Grant', occurrence: 1 };

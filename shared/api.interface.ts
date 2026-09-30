@@ -45,7 +45,7 @@ export interface ConnectorAuthStorageEnvelope {
   sealed: string;
 }
 
-/** File chunks only; each array entry retains its own encryption and response AAD. */
+/** 1–16 file chunks only, at most 960000 UTF-8 bytes per envelope; each entry retains its encryption and response AAD. */
 export interface ConnectorAuthStorageFileBatchEnvelope {
   sealed: string[];
 }

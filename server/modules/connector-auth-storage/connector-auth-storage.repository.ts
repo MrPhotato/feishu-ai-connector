@@ -46,7 +46,7 @@ class ConnectorAuthStorageRepository {
 
   async executeFileBatch(commands: StorageCommand[]): Promise<ConnectorAuthStorageResponse[]> {
     // Defend this boundary independently of the HTTP envelope/controller. Never batch OAuth state changes.
-    if (!Array.isArray(commands) || commands.length < 1 || commands.length > 8) {
+    if (!Array.isArray(commands) || commands.length < 1 || commands.length > 16) {
       throw new Error('Storage request rejected.');
     }
     const parsed: Array<GetCommand | PutCommand> = commands.map((command: StorageCommand): GetCommand | PutCommand => {

@@ -31,6 +31,32 @@ stubs['../connector-auth/connector-auth.diagnostics'] = {
   connectorAuthDiagnostics: new ConnectorAuthDiagnostics((message) => messages.push(JSON.parse(message))),
 };
 const contract = load('server/modules/connector-auth-storage/connector-auth-storage.contract.ts');
+assert.equal(contract.STORAGE_FILE_BATCH_MAX_BYTES, 960000);
+assert.ok(contract.STORAGE_FILE_BATCH_MAX_BYTES < 1024 * 1024);
+function envelopeWithBytes(byteLength) {
+  const count = 16;
+  const overhead = Buffer.byteLength(JSON.stringify({ sealed: Array(count).fill('') }));
+  const content = byteLength - overhead;
+  const sealed = Array.from({ length: count }, (_, index) => {
+    const length = Math.floor(content / count) + (index < content % count ? 1 : 0);
+    return `v1:${'a'.repeat(length - 7)}:b:c`;
+  });
+  const value = { sealed };
+  assert.equal(Buffer.byteLength(JSON.stringify(value)), byteLength);
+  assert.ok(sealed.every((entry) => entry.length >= 40 && entry.length <= 70000));
+  return value;
+}
+assert.equal(contract.validateStorageFileBatchEnvelope(envelopeWithBytes(960000)).sealed.length, 16);
+assert.throws(() => contract.validateStorageFileBatchEnvelope(envelopeWithBytes(960001)), /File batch rejected/u);
+const openapi = JSON.parse(fs.readFileSync(path.join(root, 'docs/openapi.json'), 'utf8'));
+const endpoint = openapi.paths['/openapi/connector-auth-storage/execute'].post;
+for (const schema of [endpoint.requestBody.content['application/json'].schema,
+  endpoint.responses['200'].content['application/json'].schema]) {
+  const array = schema.properties.sealed.oneOf.find((variant) => variant.type === 'array');
+  assert.equal(array.maxItems, 16); assert.equal(array.minItems, 1);
+  assert.equal(array.items.maxLength, 70000, 'per-record encrypted limit is unchanged');
+  assert.match(schema.properties.sealed.description, /960000/u);
+}
 const { ConnectorAuthStorageCrypto, STORAGE_REQUEST_AAD } = load('server/modules/connector-auth-storage/connector-auth-storage.crypto.ts');
 const { ConnectorAuthStorageService, ConnectorStorageUnavailableError } = load('server/modules/connector-auth-storage/connector-auth-storage.service.ts');
 const { ConnectorAuthStorageOpenapiController } = load('server/modules/connector-auth-storage/connector-auth-storage.openapi.controller.ts');
@@ -43,7 +69,7 @@ const crypto = new ConnectorAuthStorageCrypto();
 const store = new ConnectorAuthStorageService(crypto);
 const rows = new Map();
 const expiresAt = Math.floor(Date.now() / 1000) + 900;
-const entries = Array.from({ length: 8 }, (_, index) => ({ key: `synthetic-file:${index}`, expiresAt,
+const entries = Array.from({ length: 16 }, (_, index) => ({ key: `synthetic-file:${index}`, expiresAt,
   payload: { grantId: 'synthetic-grant', index, data: Buffer.alloc(24576, index).toString('base64') } }));
 let repositoryCalls = 0;
 let ordinaryCalls = 0;
@@ -82,7 +108,7 @@ globalThis.fetch = async (url, init) => {
   assert.equal(url, 'https://relay.example.test/openapi/connector-auth-storage/execute');
   assert.equal(init.method, 'POST'); assert.equal(init.redirect, 'error');
   assert.equal(init.headers.Authorization, 'Bearer synthetic-api-key');
-  assert.ok(Buffer.byteLength(init.body) <= 560000);
+  assert.ok(Buffer.byteLength(init.body) <= 960000);
   return fetchImpl(url, init);
 };
 function reset() { requests = 0; repositoryCalls = 0; wireBodies = []; messages.length = 0; fetchImpl = routeFetch; }
@@ -108,9 +134,9 @@ async function rejectedRelay(action, reason, status = 0, count = 1) {
 }
 
 reset(); await store.putFileChunks(entries);
-assert.equal(requests, 1); assert.equal(repositoryCalls, 1); assert.equal(rows.size, 8);
-assert.ok(Buffer.byteLength(wireBodies[0]) > 72000);
-assert.equal(messages[0].operation, 'putFileChunks'); assert.equal(messages[0].batchSize, 8);
+assert.equal(requests, 1); assert.equal(repositoryCalls, 1); assert.equal(rows.size, 16);
+assert.ok(Buffer.byteLength(wireBodies[0]) > 560000, '16 full chunks exercise the increased aggregate limit');
+assert.equal(messages[0].operation, 'putFileChunks'); assert.equal(messages[0].batchSize, 16);
 const decoded = JSON.parse(wireBodies[0]).sealed.map((sealed) => crypto.open(sealed, STORAGE_REQUEST_AAD));
 assert.deepEqual(decoded.map(({ command }) => command), entries.map((entry) => putCommand(entry))); checks++;
 reset(); const result = await store.getFileChunks(entries.map(({ key }) => key).reverse());
@@ -121,14 +147,16 @@ reset(); assert.deepEqual(await store.get('Grant', 'ordinary'), { synthetic: tru
 assert.equal(ordinaryCalls, 1); assert.equal(repositoryCalls, 0);
 assert.equal(typeof JSON.parse(wireBodies[0]).sealed, 'string'); checks++;
 
-for (const keys of [[], Array.from({ length: 9 }, (_, i) => `${i}`), ['duplicate', 'duplicate'], ['']]) {
+for (const keys of [[], Array.from({ length: 17 }, (_, i) => `${i}`), ['duplicate', 'duplicate'], ['']]) {
   reset(); await rejectedRelay(() => store.getFileChunks(keys), 'validation', 0, 0);
 }
 reset(); await rejectedRelay(() => store.putFileChunks([{ ...entries[0], payload: { data: 'x'.repeat(49152) } }]), 'validation', 0, 0);
 reset(); await rejectedRelay(() => store.putFileChunks([{ ...entries[0], payload: JSON.parse('{"constructor":"forbidden"}') }]), 'validation', 0, 0);
+const aggregateOversized = entries.map((entry) => ({ ...entry, payload: { ...entry.payload, data: 'x'.repeat(46000) } }));
+reset(); await rejectedRelay(() => store.putFileChunks(aggregateOversized), 'validation', 0, 0);
 
 for (const commands of [
-  [], Array.from({ length: 9 }, (_, i) => getCommand(`${i}`)), [getCommand(), getCommand()],
+  [], Array.from({ length: 17 }, (_, i) => getCommand(`${i}`)), [getCommand(), getCommand()],
   [{ ...getCommand(), model: 'RefreshToken' }], [{ ...getCommand(), operation: 'consume' }],
   [{ ...getCommand(), operation: 'remove' }], [{ operation: 'revokeGrant', grantId: 'synthetic-grant' }],
   [getCommand(), { ...putCommand(), key: 'different' }], [{ ...getCommand(), extra: true }],
@@ -139,7 +167,9 @@ await rejectedController(encrypted([getCommand()]), { forbidden: 'value' });
 await rejectedController({ ...encrypted([getCommand()]), extra: true });
 await rejectedController({ sealed: ['v1:a:b:c'] });
 await rejectedController({ sealed: ['x'.repeat(70001)] });
-await rejectedController({ sealed: Array(8).fill(`v1:${'a'.repeat(69990)}:b:c`) });
+await rejectedController({ sealed: Array(16).fill(`v1:${'a'.repeat(69990)}:b:c`) });
+await rejectedController(envelopeWithBytes(960001));
+await rejectedController(encrypted(aggregateOversized.map((entry) => putCommand(entry))));
 const invalidAad = { sealed: [crypto.seal({ issuedAt: Date.now(), command: getCommand() }, 'incorrect')] };
 await rejectedController(invalidAad);
 const altered = encrypted([getCommand()]);
@@ -175,7 +205,7 @@ await rejectedRelay(() => store.getFileChunks(['one']), 'network');
 reset(); fetchImpl = async () => { abort.abort(); throw new Error('synthetic-sensitive-timeout'); };
 await rejectedRelay(() => store.getFileChunks(['one']), 'network_timeout');
 for (const response of [() => new Response(null, { headers: { 'Content-Type': 'application/json' } }),
-  () => new Response('x'.repeat(560001), { headers: { 'Content-Type': 'application/json' } }),
+  () => new Response('x'.repeat(960001), { headers: { 'Content-Type': 'application/json' } }),
   () => new Response('{}', { headers: { 'Content-Type': 'text/plain' } })]) {
   reset(); fetchImpl = async () => response();
   await rejectedRelay(() => store.getFileChunks(['one']), 'response_invalid', 200);
@@ -189,8 +219,14 @@ for (const returned of [[], [{ ok: true }, { ok: true }], [{ ok: true, record: {
 }
 assert.throws(() => contract.validateStorageJson({ value: 'x'.repeat(49152) }));
 assert.throws(() => crypto.seal({ value: 'x'.repeat(49152) }, STORAGE_REQUEST_AAD));
+for (const size of [1, 8, 16, 17, 0, -1, 1.5, '16']) {
+  stubs['../connector-auth/connector-auth.diagnostics'].connectorAuthDiagnostics
+    .storage('getFileChunks', 'FeishuFileChunk', true, 1, undefined, 200, size);
+  assert.equal(messages.at(-1).batchSize, [1, 8, 16].includes(size) ? size : 0);
+  checks++;
+}
 assert.ok(!JSON.stringify(messages).includes('synthetic-sensitive'));
 assert.ok(!JSON.stringify(messages).includes('synthetic-api-key'));
 assert.ok(!JSON.stringify(messages).includes('synthetic-grant')); checks++;
-console.log(JSON.stringify({ ok: true, checks, network: false, batchSize: 8,
+console.log(JSON.stringify({ ok: true, checks, network: false, batchSize: 16,
   coverage: 'independent AAD, ordered encrypted controller-relay roundtrip, per-entry and aggregate limits, file-only same-operation batches, all-before-write validation, safe failure classes, privacy middleware' }));

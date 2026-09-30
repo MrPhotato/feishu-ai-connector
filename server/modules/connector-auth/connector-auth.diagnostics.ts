@@ -64,7 +64,7 @@ export class ConnectorAuthDiagnostics {
     if (upstreamStatus !== undefined) value.upstreamStatus = typeof upstreamStatus === 'number' &&
       Number.isInteger(upstreamStatus) && upstreamStatus >= 100 && upstreamStatus <= 599 ? upstreamStatus : 0;
     if (batchSize !== undefined) value.batchSize = typeof batchSize === 'number' &&
-      Number.isInteger(batchSize) && batchSize >= 1 && batchSize <= 8 ? batchSize : 0;
+      Number.isInteger(batchSize) && batchSize >= 1 && batchSize <= 16 ? batchSize : 0;
     this.emit(value);
   }
 }

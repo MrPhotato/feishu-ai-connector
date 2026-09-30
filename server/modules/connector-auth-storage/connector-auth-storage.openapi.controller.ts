@@ -48,7 +48,7 @@ class ConnectorAuthStorageOpenapiController {
 
   private async executeFileBatch(privateRequest: Request, privateResponse: Response): Promise<void> {
     const envelope = validateStorageFileBatchEnvelope(privateRequest.body);
-    // Fully validate every entry before the repository receives any command.
+    // Shared envelope validation bounds this to 16 entries / 960000 bytes before any command reaches the repository.
     const commands = storageFileBatchCommandSchema.parse(envelope.sealed.map((sealed) => {
       const timed = storageTimedCommandSchema.parse(this.crypto.open(sealed, STORAGE_REQUEST_AAD));
       if (Math.abs(Date.now() - timed.issuedAt) > 60000) throw new Error('File batch rejected.');

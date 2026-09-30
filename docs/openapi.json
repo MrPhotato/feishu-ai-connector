@@ -87,11 +87,11 @@
                 "additionalProperties": false,
                 "properties": {
                   "sealed": {
-                    "description": "单个加密存储命令，或仅用于文件分片同类读写的批量封包；每条独立认证加密并校验有效期",
+                    "description": "单个加密存储命令，或仅用于文件分片同类读写的批量封包；批量最多16条、完整JSON封包最多960000 UTF-8字节，每条独立认证加密并校验有效期",
                     "oneOf": [
                       { "type": "string", "minLength": 40, "maxLength": 70000,
                         "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" },
-                      { "type": "array", "minItems": 1, "maxItems": 8,
+                      { "type": "array", "minItems": 1, "maxItems": 16,
                         "items": { "type": "string", "minLength": 40, "maxLength": 70000,
                           "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" } }
                     ]
@@ -112,11 +112,11 @@
                   "additionalProperties": false,
                   "properties": {
                     "sealed": {
-                      "description": "绑定本次请求摘要的独立加密响应，批量时数量及顺序必须与请求一致",
+                      "description": "绑定本次请求摘要的独立加密响应，批量时数量及顺序必须与请求一致；最多16条、完整JSON封包最多960000 UTF-8字节",
                       "oneOf": [
                         { "type": "string", "minLength": 40, "maxLength": 70000,
                           "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" },
-                        { "type": "array", "minItems": 1, "maxItems": 8,
+                        { "type": "array", "minItems": 1, "maxItems": 16,
                           "items": { "type": "string", "minLength": 40, "maxLength": 70000,
                             "example": "v1:syntheticNonce:syntheticCiphertext:syntheticTag" } }
                       ]

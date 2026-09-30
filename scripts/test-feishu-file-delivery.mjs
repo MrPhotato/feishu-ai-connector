@@ -220,7 +220,7 @@ await assert.rejects(recovered.publishFile({ ...store, async put() { cappedAttem
   principal, { ...file, byteLength: 1, dataBase64: 'eA==' }), /file_delivery_unavailable/);
 assert.equal(cappedAttempts, 3, 'bounded retries only');
 
-// The deployed relay batches eight individually encrypted chunks per HTTP request.
+// The deployed relay batches sixteen individually encrypted chunks per HTTP request.
 const batchWaits = [];
 const batched = loader({ 'node:timers/promises': { setTimeout: async (ms) => { batchWaits.push(ms); } } })
   ('server/modules/feishu-tools/feishu-file-delivery.ts');
@@ -229,12 +229,12 @@ let getBatches = 0;
 const batchStore = { ...store,
   async putFileChunks(entries) {
     putBatches++;
-    assert(entries.length >= 1 && entries.length <= 8);
+    assert(entries.length >= 1 && entries.length <= 16);
     for (const entry of entries) await store.put('FeishuFileChunk', entry.key, entry.payload, entry.expiresAt);
   },
   async getFileChunks(keys) {
     getBatches++;
-    assert(keys.length >= 1 && keys.length <= 8);
+    assert(keys.length >= 1 && keys.length <= 16);
     return Promise.all(keys.map((key) => store.get('FeishuFileChunk', key)));
   },
   async put(model, ...args) { assert.notEqual(model, 'FeishuFileChunk'); await store.put(model, ...args); },
@@ -243,9 +243,9 @@ const batchStore = { ...store,
 const batchLink = await batched.publishFile(batchStore, principal, largeFile);
 const batchTicket = new URL(batchLink.downloadUrl).searchParams.get('ticket');
 assert.deepEqual((await batched.retrieveFile(batchStore, batchTicket)).bytes, largeBytes);
-assert.equal(putBatches, 39, '308 chunks use only 39 batch HTTP writes');
-assert.equal(getBatches, 39, '308 chunks use only 39 batch HTTP reads');
-assert(batchWaits.some((ms) => ms >= 250), 'file batches reserve paced request slots');
+assert.equal(putBatches, 20, '308 chunks use only 20 batch HTTP writes');
+assert.equal(getBatches, 20, '308 chunks use only 20 batch HTTP reads');
+assert(batchWaits.some((ms) => ms >= 500), 'file batches reserve paced request slots');
 await assert.rejects(batched.retrieveFile({ ...batchStore, async getFileChunks() { return []; } }, batchTicket),
   /file_delivery_invalid/, 'incomplete batch cannot release file bytes');
 let batchAttempts = 0;

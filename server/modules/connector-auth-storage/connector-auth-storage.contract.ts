@@ -43,11 +43,11 @@ const storageResponseSchema = z.object({
 
 type StorageCommand = z.infer<typeof storageCommandSchema>;
 
-const STORAGE_FILE_BATCH_MAX_BYTES: number = 560000;
+const STORAGE_FILE_BATCH_MAX_BYTES: number = 960000;
 const storageFileBatchEnvelopeSchema = z.object({
-  sealed: z.array(storageEnvelopeSchema.shape.sealed).min(1).max(8),
+  sealed: z.array(storageEnvelopeSchema.shape.sealed).min(1).max(16),
 }).strict();
-const storageFileBatchCommandSchema = z.array(storageCommandSchema).min(1).max(8).superRefine((commands, context): void => {
+const storageFileBatchCommandSchema = z.array(storageCommandSchema).min(1).max(16).superRefine((commands, context): void => {
   const firstOperation: string = commands[0]?.operation ?? '';
   const keys: Set<string> = new Set();
   for (const command of commands) {

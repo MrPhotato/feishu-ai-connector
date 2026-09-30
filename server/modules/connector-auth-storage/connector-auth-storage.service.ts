@@ -163,7 +163,7 @@ class ConnectorAuthStorageService {
     let upstreamStatus: number = 0;
     let signal: AbortSignal | undefined;
     try {
-      if (inputs.length < 1 || inputs.length > 8) throw new Error('File batch rejected.');
+      if (inputs.length < 1 || inputs.length > 16) throw new Error('File batch rejected.');
       inputs.forEach(validateStorageJson);
       const commands = storageFileBatchCommandSchema.parse(JSON.parse(JSON.stringify(inputs)));
       const timedCommands = commands.map((command) => ({ issuedAt: Date.now(), command }));

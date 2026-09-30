@@ -13,7 +13,7 @@ const MAX_FILE_BYTES: number = 10 * 1024 * 1024;
 const FILE_TICKET: RegExp = /^[A-Za-z0-9_-]{43}$/u;
 const FILE_CONCURRENCY: number = 4;
 const FILE_TRANSFER_TIMEOUT_MS: number = 85000;
-const FILE_BATCH_SIZE: number = 8;
+const FILE_BATCH_SIZE: number = 16;
 let nextFileBatchAt: number = 0;
 
 interface FileTransfer { deadline: number; stopped: boolean }
@@ -77,7 +77,7 @@ async function parallel<T>(
 async function fileBatch<T>(transfer: FileTransfer, action: () => Promise<T>): Promise<T> {
   // Share a modest request rate across file transfers in this process, leaving capacity for OAuth reads.
   const scheduledAt: number = Math.max(Date.now(), nextFileBatchAt);
-  nextFileBatchAt = scheduledAt + 250;
+  nextFileBatchAt = scheduledAt + 500;
   if (scheduledAt >= transfer.deadline) throw new Error('file_delivery_timeout');
   const delay: number = scheduledAt - Date.now();
   if (delay > 0) await wait(delay);

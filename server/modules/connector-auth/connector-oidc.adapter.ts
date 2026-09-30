@@ -1,8 +1,10 @@
 import { errors } from 'oidc-provider';
 import type { Adapter, AdapterFactory, AdapterPayload } from 'oidc-provider';
+import { setTimeout as delay } from 'node:timers/promises';
 import { authNow, authRecord } from './connector-auth.types';
 import type { ConnectorAuthStore } from './connector-auth.types';
 import { ConnectorAuthUnavailableError, connectorAuthStorageOperation } from './connector-auth.unavailable';
+import { ConnectorStorageUnavailableError } from '../connector-auth-storage/connector-auth-storage.service';
 
 function samePayload(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
   const canonical = (value: Record<string, unknown>): string => JSON.stringify(value,
@@ -11,28 +13,54 @@ function samePayload(left: Record<string, unknown>, right: Record<string, unknow
   return canonical(left) === canonical(right);
 }
 
+function recoverableStorageError(error: unknown): boolean {
+  return error instanceof ConnectorStorageUnavailableError &&
+    (error.failureReason === 'network' || error.failureReason === 'network_timeout' ||
+      (error.failureReason === 'http' && (error.upstreamStatus === 429 || error.upstreamStatus === 408 ||
+        error.upstreamStatus >= 500)));
+}
+
 /** Recover only this newly issued token's idempotent persistence, never its predecessor's consume. */
 async function saveRefreshToken(
   store: ConnectorAuthStore, id: string, payload: Record<string, unknown>, expiresAt: number,
   uid?: string, grantId?: string,
 ): Promise<void> {
-  for (let attempt: number = 0; attempt < 2; attempt++) {
+  const started: number = performance.now();
+  const canStart: () => boolean = (): boolean => performance.now() - started < 20000 && expiresAt > authNow();
+  if (!canStart()) throw new ConnectorAuthUnavailableError();
+  try { await store.put('RefreshToken', id, payload, expiresAt, uid, grantId); return; }
+  catch (error: unknown) {
+    if (!recoverableStorageError(error)) throw new ConnectorAuthUnavailableError();
+  }
+  // At most five persistence rounds. The 20s budget bounds new I/O starts; an
+  // already started relay retains its own 15s timeout, without orphaning a write.
+  for (const backoff of [500, 1000, 2000, 4000]) {
+    const pause: number = backoff + Math.floor(Math.random() * 251);
+    if (!canStart() || performance.now() - started + pause >= 20000) break;
+    await delay(pause);
+    if (!canStart()) break;
+    let stored: Record<string, unknown> | undefined;
+    try { stored = await store.get('RefreshToken', id); }
+    catch (error: unknown) {
+      if (!recoverableStorageError(error)) throw new ConnectorAuthUnavailableError();
+      // In particular, do not blindly put after an uncertain readback. A 429 may
+      // share the initial write's quota window, so only retry after another delay.
+      continue;
+    }
+    if (stored) {
+      if (expiresAt > authNow() && !Object.prototype.hasOwnProperty.call(stored, 'consumed') &&
+        samePayload(stored, payload)) return;
+      throw new ConnectorAuthUnavailableError();
+    }
+    if (!canStart()) break;
     try { await store.put('RefreshToken', id, payload, expiresAt, uid, grantId); return; }
-    catch {
-      // A timeout may mean either no write or a lost acknowledgement. Read the exact
-      // key before retrying; never replace a different or already consumed artifact.
-      const stored: Record<string, unknown> | undefined = await connectorAuthStorageOperation(() =>
-        store.get('RefreshToken', id));
-      if (stored) {
-        if (expiresAt > authNow() && !Object.prototype.hasOwnProperty.call(stored, 'consumed') &&
-          samePayload(stored, payload)) return;
-        throw new ConnectorAuthUnavailableError();
-      }
-      if (attempt === 1 || expiresAt <= authNow()) throw new ConnectorAuthUnavailableError();
-      // Retry exactly once, retaining absolute expiry and payload. Storage preserves
-      // consumedAt and checks revocation tombstones before and after every upsert.
+    catch (error: unknown) {
+      if (!recoverableStorageError(error)) throw new ConnectorAuthUnavailableError();
+      // Retry this exact new artifact only. The repository retains consumedAt,
+      // absolute expiry and bindings and checks revocation before/after the write.
     }
   }
+  throw new ConnectorAuthUnavailableError();
 }
 
 /** The provider never receives its development-only memory adapter. */

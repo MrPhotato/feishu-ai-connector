@@ -1,6 +1,6 @@
 {
   "name": "feishu",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "通过本人飞书授权检索资料、阅读上下文并执行明确授权的操作。",
   "author": {
     "name": "Connector maintainer"
