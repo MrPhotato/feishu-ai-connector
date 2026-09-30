@@ -130,15 +130,19 @@ try {
     assert.equal(init.redirect, 'error'); assert.ok(init.signal instanceof AbortSignal);
     return new Response('{"access_token":"synthetic-only"}', { status: 200 });
   };
-  const reply = await connectorFeishuHttp('https://accounts.feishu.cn/oauth/v3/token', {
+  const reply = await connectorFeishuHttp('https://open.feishu.cn/open-apis/authen/v2/oauth/token', {
     method: 'POST', headers: {}, body: '{}',
   });
   assert.equal(reply.ok, true); assert.equal(called, true);
   called = false;
   await assert.rejects(() => connectorFeishuHttp('https://attacker.test/token', { method: 'POST', headers: {} }));
   assert.equal(called, false, 'upstream allowlist rejects before network');
-  globalThis.fetch = async () => new Response('synthetic-secret '.repeat(20000));
   await assert.rejects(() => connectorFeishuHttp('https://accounts.feishu.cn/oauth/v3/token', {
+    method: 'POST', headers: {}, body: '{}',
+  }));
+  assert.equal(called, false, 'authorization-code transport does not fall back to the incompatible endpoint');
+  globalThis.fetch = async () => new Response('synthetic-secret '.repeat(20000));
+  await assert.rejects(() => connectorFeishuHttp('https://open.feishu.cn/open-apis/authen/v2/oauth/token', {
     method: 'POST', headers: {},
   }), (error) => error.message === 'Feishu authorization service unavailable' && !error.cause);
 } finally { globalThis.fetch = originalFetch; }
@@ -152,8 +156,11 @@ let syntheticRefresh = true;
 let syntheticTokenOverrides = {};
 const flow = new ConnectorFeishuFlow(config, store, oidc.provider, async (url, init) => {
   upstreamCalls += 1;
-  if (url === 'https://accounts.feishu.cn/oauth/v3/token') {
+  if (url === 'https://open.feishu.cn/open-apis/authen/v2/oauth/token') {
     const params = JSON.parse(init.body);
+    assert.equal(params.grant_type, 'authorization_code');
+    assert.equal(new Headers(init.headers).get('content-type'), 'application/json');
+    assert.match(params.code_verifier, /^[A-Za-z0-9._~-]{43,128}$/u);
     assert.equal(params.code, 'synthetic-code');
     assert.equal(params.redirect_uri, `${publicUrl}/auth/feishu/callback`);
     assert.equal(params.client_id, config.feishuAppId);
@@ -312,8 +319,8 @@ async function authorize(decision = 'allow', exerciseFailures = false, stripPref
       headers: { ...consentInit.headers, origin: 'null' } });
     assert.equal(nullOrigin.status, 400, 'do not weaken strict Origin checks to accommodate the old header policy');
     assert.equal(nullOrigin.headers.get('referrer-policy'), 'no-referrer', 'other controller responses retain privacy policy');
-    assert.deepEqual(await nullOrigin.json(), { error: 'invalid_request',
-      error_description: '授权未完成，请从 ChatGPT 重新发起连接。' });
+    assert.match(nullOrigin.headers.get('content-type'), /text\/html/u);
+    assert.match(await nullOrigin.text(), /重新/u);
     assert.equal((await browser.request(`${consentUrl}/confirm`, { ...consentInit,
       body: new URLSearchParams({ csrf: 'wrong', decision }) })).status, 400);
     assert.equal((await browser.request(`${consentUrl}/confirm`, { ...consentInit,
@@ -388,8 +395,10 @@ try {
     const fresh = new Browser();
     const reply = await incrementalCallback(fresh, await reconnectEntry(fresh), callbackFields);
     assert.equal(reply.status, 400, 'invalid provider credential/ordinary field is rejected');
-    assert.deepEqual(await reply.json(), { error: 'invalid_request',
-      error_description: '授权未完成，请从 ChatGPT 重新发起连接。' });
+    assert.match(reply.headers.get('content-type'), /text\/html/u);
+    const failurePage = await reply.text();
+    assert.match(failurePage, /重新/u);
+    assert.ok(!failurePage.includes('synthetic-code'));
     assert.deepEqual(await store.get('FeishuAccount', `tenant_protocol:${syntheticOpenId}`), before,
       'failed callback never overwrites stored account');
     const diagnostic = diagnosticRecords.filter((entry) => entry.event === 'connector_feishu_callback').at(-1);
@@ -406,6 +415,10 @@ try {
   syntheticTokenOverrides = { code: 20001 };
   await callbackFailure('token_exchange');
   assert.equal(diagnosticRecords.filter((entry) => entry.event === 'connector_feishu_callback').at(-1).providerCode, 20001);
+  syntheticTokenOverrides = { code: 20049, error: 'invalid_grant' };
+  const callsBeforePkceFailure = upstreamCalls;
+  await callbackFailure('token_exchange');
+  assert.equal(upstreamCalls, callsBeforePkceFailure + 1, 'PKCE rejection is not retried or downgraded');
   syntheticTokenOverrides = {};
   const callsBeforeFieldFailures = upstreamCalls;
   await callbackFailure('state', { state: 's'.repeat(4097) });

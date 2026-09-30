@@ -8,6 +8,7 @@ import { createConnectorOidc } from './connector-oidc.factory';
 import type { ConnectorOidc } from './connector-oidc.factory';
 import { ConnectorFeishuFlow } from './connector-feishu.flow';
 import { connectorFeishuHttp } from './connector-feishu.http';
+import { ConnectorAuthUnavailableError } from './connector-auth.unavailable';
 import type { ConnectorAuthConfig, McpPrincipal, VerifiedMcpAuthorization } from './connector-auth.types';
 
 interface ConnectorAuthRuntime { oidc: ConnectorOidc; flow: ConnectorFeishuFlow }
@@ -69,7 +70,10 @@ export class ConnectorAuthService {
 
   async verifyMcpAuthorization(token: string): Promise<VerifiedMcpAuthorization> {
     const runtime: ConnectorAuthRuntime = this.getRuntime();
-    try { return await runtime.oidc.verifyMcpAuthorization(token); } catch {
+    try { return await runtime.oidc.verifyMcpAuthorization(token); } catch (error: unknown) {
+      if (error instanceof ConnectorAuthUnavailableError) {
+        throw new ServiceUnavailableException('连接服务暂时不可用，请稍后重试。');
+      }
       throw new UnauthorizedException('连接已失效，请重新授权。');
     }
   }

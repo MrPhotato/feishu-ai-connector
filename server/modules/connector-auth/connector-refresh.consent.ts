@@ -1,5 +1,6 @@
 import { authNow, authRecord, authStrings } from './connector-auth.types';
 import type { ConnectorAuthStore } from './connector-auth.types';
+import { ConnectorAuthUnavailableError } from './connector-auth.unavailable';
 
 export const CONNECTOR_CONNECTION_TTL: number = 30 * 86400;
 export const CONNECTOR_RESOURCE_SCOPES: readonly string[] = ['feishu.read', 'feishu.write'];
@@ -13,7 +14,9 @@ export async function connectorRefreshConsent(
   const reads: PromiseSettledResult<Record<string, unknown> | undefined>[] = await Promise.allSettled([
     store.get('Consent', grantId), store.get('Grant', grantId),
   ]);
-  if (reads[0].status !== 'fulfilled' || reads[1].status !== 'fulfilled') return false;
+  if (reads[0].status !== 'fulfilled' || reads[1].status !== 'fulfilled') {
+    throw new ConnectorAuthUnavailableError();
+  }
   const consent: Record<string, unknown> | undefined = reads[0].value;
   const grant: Record<string, unknown> | undefined = reads[1].value;
   if (!consent || !grant || consent.grantId !== grantId || consent.accountId !== accountId ||

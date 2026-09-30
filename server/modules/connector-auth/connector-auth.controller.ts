@@ -3,12 +3,16 @@ import type { Request, Response } from 'express';
 import { ConnectorAuthService } from './connector-auth.service';
 import { CONNECTOR_CHATGPT_CALLBACK } from './connector-auth.config';
 import { connectorPrivateRequest, connectorPrivateResponse } from '../connector-privacy/connector-privacy.middleware';
+import { sendConnectorBrowserError } from './connector-auth.error-page';
+import { ConnectorAuthUnavailableError } from './connector-auth.unavailable';
 
 @Controller()
 export class ConnectorAuthController {
   constructor(private readonly auth: ConnectorAuthService) {}
 
-  private async handle(response: Response, operation: () => Promise<void>): Promise<void> {
+  private async handle(
+    response: Response, operation: () => Promise<void>, browserError: boolean = false,
+  ): Promise<void> {
     response.set({
       'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
@@ -16,12 +20,24 @@ export class ConnectorAuthController {
     });
     try { await operation(); } catch (error: unknown) {
       if (response.headersSent) { response.end(); return; }
-      const unavailable: boolean = error instanceof ServiceUnavailableException;
+      const unavailable: boolean = error instanceof ServiceUnavailableException || error instanceof ConnectorAuthUnavailableError;
+      if (browserError) { sendConnectorBrowserError(response, unavailable); return; }
       response.status(unavailable ? 503 : 400).json({
         error: unavailable ? 'temporarily_unavailable' : 'invalid_request',
         error_description: unavailable ? '连接服务尚未完成配置。' : '授权未完成，请从 ChatGPT 重新发起连接。',
       });
     }
+  }
+
+  private async browser(
+    request: Request, response: Response, operation: (request: Request, response: Response) => Promise<void>,
+  ): Promise<void> {
+    let privateResponse: Response;
+    try { privateResponse = connectorPrivateResponse(response); } catch {
+      // Fail closed if privacy middleware is unavailable; the fallback contains no request data.
+      sendConnectorBrowserError(response, true); return;
+    }
+    await this.handle(privateResponse, () => operation(connectorPrivateRequest(request), privateResponse), true);
   }
 
   @All('oidc/*')
@@ -37,25 +53,21 @@ export class ConnectorAuthController {
 
   @Get('interaction/:uid')
   async interaction(@Req() request: Request, @Res() response: Response): Promise<void> {
-    const privateResponse: Response = connectorPrivateResponse(response);
-    await this.handle(privateResponse, () => this.auth.interaction(connectorPrivateRequest(request), privateResponse));
+    await this.browser(request, response, (req: Request, res: Response) => this.auth.interaction(req, res));
   }
 
   @Get('auth/feishu/callback')
   async callback(@Req() request: Request, @Res() response: Response): Promise<void> {
-    const privateResponse: Response = connectorPrivateResponse(response);
-    await this.handle(privateResponse, () => this.auth.callback(connectorPrivateRequest(request), privateResponse));
+    await this.browser(request, response, (req: Request, res: Response) => this.auth.callback(req, res));
   }
 
   @Get('interaction/:uid/finish')
   async finish(@Req() request: Request, @Res() response: Response): Promise<void> {
-    const privateResponse: Response = connectorPrivateResponse(response);
-    await this.handle(privateResponse, () => this.auth.finish(connectorPrivateRequest(request), privateResponse));
+    await this.browser(request, response, (req: Request, res: Response) => this.auth.finish(req, res));
   }
 
   @Post('interaction/:uid/confirm')
   async consent(@Req() request: Request, @Res() response: Response): Promise<void> {
-    const privateResponse: Response = connectorPrivateResponse(response);
-    await this.handle(privateResponse, () => this.auth.consent(connectorPrivateRequest(request), privateResponse));
+    await this.browser(request, response, (req: Request, res: Response) => this.auth.consent(req, res));
   }
 }

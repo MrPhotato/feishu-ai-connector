@@ -3,7 +3,7 @@ import type { FeishuHttp, FeishuHttpResponse } from './connector-auth.types';
 /** Avoid platform HTTP logging interceptors for authorization codes and credentials. */
 export const connectorFeishuHttp: FeishuHttp = async (url, init): Promise<FeishuHttpResponse> => {
   try {
-    if (!['https://accounts.feishu.cn/oauth/v3/token',
+    if (!['https://open.feishu.cn/open-apis/authen/v2/oauth/token',
       'https://open.feishu.cn/open-apis/authen/v1/user_info'].includes(url)) throw new Error('Invalid endpoint');
     const response: globalThis.Response = await fetch(url, {
       ...init, redirect: 'error', signal: AbortSignal.timeout(15000),

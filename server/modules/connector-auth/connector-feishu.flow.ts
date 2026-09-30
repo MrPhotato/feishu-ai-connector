@@ -135,7 +135,9 @@ export class ConnectorFeishuFlow {
       stage = 'code';
       const code: string = field(request.query.code);
       stage = 'token_exchange';
-      const tokenReply: FeishuHttpResponse = await this.http('https://accounts.feishu.cn/oauth/v3/token', {
+      // The authorize endpoint currently documents PKCE exchange with v2 only.
+      // Keep S256/verifier binding; never retry a consumed code at another endpoint.
+      const tokenReply: FeishuHttpResponse = await this.http('https://open.feishu.cn/open-apis/authen/v2/oauth/token', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
           grant_type: 'authorization_code', client_id: this.config.feishuAppId, client_secret: this.config.feishuAppSecret,
           code, redirect_uri: `${this.config.publicUrl}/auth/feishu/callback`, code_verifier: verifier,

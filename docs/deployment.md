@@ -87,6 +87,14 @@ node scripts/probe-remote.mjs
 
 确认公开合成探针通过后，再验证现有本人连接的只读能力；不要用发送消息、发送邮件或改写业务文档作为配置检查。
 
+### 登录与续期故障排查
+
+授权存储临时超时应返回 HTTP 503（OAuth 为 `temporarily_unavailable`），不能当作凭据无效返回 400/401。记录缺失、到期、撤销或绑定不匹配仍应拒绝。不要通过放宽权限、延长有效期或重用已消费的凭据处理临时故障。
+
+飞书授权页面采用 S256 PKCE；授权码固定提交到 `https://open.feishu.cn/open-apis/authen/v2/oauth/token`，后续飞书刷新仍使用 v3。此配套依据[获取授权码文档](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code.md)对 PKCE 的兼容提示；该提示与 v2 迁移说明不完全一致，升级接口时应重新完成真实授权验收。[v3 刷新文档](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/refresh-user-access-token-v3.md)明确接受 v2/v3 签发的刷新令牌。授权交换失败不自动换端点重试，也不移除 PKCE。
+
+浏览器授权失败显示简洁中文页面，用户从 ChatGPT 重新发起授权；错误页不重放旧 code/state。协议接口继续返回 JSON，页面与日志均不得包含原始凭据。
+
 远程存储探针会创建和清理短期合成数据，有的还会创建临时 API Key。它们不是只读检查，不应混入日常配置拉取或插件生成流程。
 
 共享或发布源码时采用明确的文件清单：包含通用源码、无实例值的模板与部署说明；排除密钥、本地副本、生成包、旧项目资料与验证记录、现有 `.spark` 绑定及旧 Git 历史。提交贡献前同时检查文件和历史中的敏感信息，`.gitignore` 不会移除已经进入历史的内容。

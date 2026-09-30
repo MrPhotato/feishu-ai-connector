@@ -12,6 +12,7 @@ import { connectorAuthDiagnostics } from './connector-auth.diagnostics';
 import type { ConnectorAuthDiagnostics } from './connector-auth.diagnostics';
 import type { ConnectorAuthConfig, ConnectorAuthStore, McpPrincipal, VerifiedMcpAuthorization } from './connector-auth.types';
 import { connectorFeishuAccountMatches, connectorFeishuPermissionsComplete } from './connector-feishu.permissions';
+import { ConnectorAuthUnavailableError, connectorAuthStorageOperation } from './connector-auth.unavailable';
 
 export interface ConnectorOidcOptions {
   /** Only test harnesses pass this argument; the production service never supplies it. */
@@ -121,7 +122,8 @@ export function createConnectorOidc(
       return true;
     },
     async findAccount(ctx: KoaContextWithOIDC, id: string): Promise<Account | undefined> {
-      const account: Record<string, unknown> | undefined = await store.get('FeishuAccount', id);
+      const account: Record<string, unknown> | undefined = await connectorAuthStorageOperation(() =>
+        store.get('FeishuAccount', id));
       if (!connectorFeishuAccountMatches(account, id)) return undefined;
       upstreamAccounts.set(ctx, account);
       return { accountId: id, claims: (): { sub: string } => ({ sub: id }) };
@@ -201,7 +203,9 @@ export function createConnectorOidc(
           store.get('Grant', payload.grant_id), store.get('FeishuAccount', payload.sub),
         ]);
         storageMs = performance.now() - storageStarted;
-        if (reads[0].status !== 'fulfilled' || reads[1].status !== 'fulfilled') throw new Error('Invalid token');
+        if (reads[0].status !== 'fulfilled' || reads[1].status !== 'fulfilled') {
+          throw new ConnectorAuthUnavailableError();
+        }
         const grant: Record<string, unknown> | undefined = reads[0].value;
         const account: Record<string, unknown> | undefined = reads[1].value;
         const scopes: string[] = payload.scope.split(' ').filter(Boolean);
