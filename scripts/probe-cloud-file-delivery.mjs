@@ -23,10 +23,20 @@ const require = createRequire(import.meta.url);
 const requestedBytes = process.argv[2] === undefined ? 90_000 : Number(process.argv[2]);
 assert.ok(Number.isSafeInteger(requestedBytes) && requestedBytes > 0 && requestedBytes <= 10 * 1024 * 1024);
 const storageFailures = new Map();
+const storageOperations = new Map();
 const originalLog = Logger.prototype.log;
 Logger.prototype.log = function (message) {
   try {
     const row = JSON.parse(message);
+    if (row.event === 'connector_auth_storage') {
+      const key = `${row.operation}:${row.model}`;
+      const metric = storageOperations.get(key) ?? { count: 0, failed: 0, totalMs: 0, maxMs: 0 };
+      metric.count++;
+      metric.failed += row.ok === false ? 1 : 0;
+      metric.totalMs += Number(row.durationMs) || 0;
+      metric.maxMs = Math.max(metric.maxMs, Number(row.durationMs) || 0);
+      storageOperations.set(key, metric);
+    }
     if (row.event === 'connector_auth_storage' && row.ok === false) {
       const key = `${row.failureReason ?? 'unknown'}:${row.upstreamStatus ?? 0}`;
       storageFailures.set(key, (storageFailures.get(key) ?? 0) + 1);
@@ -80,12 +90,13 @@ try {
   console.log(JSON.stringify({ ok: true, checks, byteLength: bytes.length, realBusinessData: false,
     durationMs: Math.round(performance.now() - started), publishDurationMs, downloadStatus,
     storageFailures: Object.fromEntries(storageFailures),
+    storageOperations: Object.fromEntries(storageOperations),
     delivery: 'cloud encrypted storage -> anonymous capability URL -> revoke -> HTTP 410' }));
 } catch {
   console.error(`Cloud file delivery verification failed at ${phase}; private values withheld.`);
   console.error(JSON.stringify({ byteLength: requestedBytes, durationMs: Math.round(performance.now() - started),
     publishDurationMs, downloadStatus,
-    storageFailures: Object.fromEntries(storageFailures) }));
+    storageFailures: Object.fromEntries(storageFailures), storageOperations: Object.fromEntries(storageOperations) }));
   process.exitCode = 1;
 } finally {
   try {
