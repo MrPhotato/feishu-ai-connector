@@ -1,8 +1,10 @@
 # 飞书 AI 连接器插件包
 
-本目录是 **0.4.4 通用源模板**，包含四个定制领域 Skills；MCP 列表故意留空，不会连接任何现有企业实例。配置好部署后运行 `node scripts/generate-deployment-plugin.mjs`，安装生成的 `deployment/generated/plugins/feishu/` 副本，不能直接把本目录当成已配置的连接器。部署配置与生成步骤见 [部署说明](../../deployment/README.md)。
+本目录是 **0.4.5 通用源模板**，包含四个定制领域 Skills；MCP 列表故意留空，不会连接任何现有企业实例。配置好部署后运行 `node scripts/generate-deployment-plugin.mjs`，安装生成的 `deployment/generated/plugins/feishu/` 副本，不能直接把本目录当成已配置的连接器。部署配置与生成步骤见 [部署说明](../../deployment/README.md)。
 
 生成或连接 MCP 不会自动安装这四个 Skills；文件创建、编译和协议测试通过也不代表宿主已完成安装或激活。线上能力以实际工具发现和后端验收为准。
+
+0.4.5 服务端可选启用 `chatgpt_confidential` OAuth 客户端。客户端密钥须在宿主的私有 OAuth 设置中单独配置，不进入此模板或生成包；旧连接需要重新授权才会迁移。刷新令牌最多 30 天有效，不随使用顺延，实际部署与连接状态需另行验证。详见 [OAuth 刷新策略](../../deployment/oauth-refresh.md)。
 
 ## 文件与加载
 

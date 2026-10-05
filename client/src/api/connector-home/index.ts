@@ -10,7 +10,7 @@ export async function getStatus(signal?: AbortSignal): Promise<ConnectorStatus> 
   const value: unknown = await response.json();
   if (typeof value !== 'object' || value === null || !('configured' in value) ||
     typeof value.configured !== 'boolean' || !('mcpUrl' in value) || typeof value.mcpUrl !== 'string' ||
-    !('oauthClientId' in value) || value.oauthClientId !== 'chatgpt' ||
+    !('oauthClientId' in value) || (value.oauthClientId !== 'chatgpt' && value.oauthClientId !== 'chatgpt_confidential') ||
     !('message' in value) || typeof value.message !== 'string') {
     throw new Error('服务状态暂不可用，请稍后重试。');
   }

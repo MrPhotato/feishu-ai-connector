@@ -6,7 +6,8 @@ import { isIP } from 'node:net';
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
 const fields = ['miaodaAppId', 'publicUrl', 'feishuAppId', 'defaultTimezone', 'displayName', 'author'];
 const privateKeyNames = ['CONNECTOR_STORAGE_API_KEY', 'CONNECTOR_STORAGE_ENCRYPTION_KEY',
-  'CONNECTOR_SIGNING_JWKS', 'CONNECTOR_COOKIE_KEYS', 'FEISHU_APP_SECRET'];
+  'CONNECTOR_SIGNING_JWKS', 'CONNECTOR_COOKIE_KEYS', 'FEISHU_APP_SECRET',
+  'CONNECTOR_CHATGPT_CLIENT_SECRET'];
 
 function invalid(message) { throw new Error(`Deployment configuration ${message}.`); }
 

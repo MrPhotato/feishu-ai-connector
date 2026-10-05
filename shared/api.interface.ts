@@ -94,6 +94,6 @@ export interface FeishuFileLink {
 export interface ConnectorStatus {
   configured: boolean;
   mcpUrl: string;
-  oauthClientId: 'chatgpt';
+  oauthClientId: 'chatgpt' | 'chatgpt_confidential';
   message: string;
 }

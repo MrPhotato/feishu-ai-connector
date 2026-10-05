@@ -2,7 +2,8 @@ import { Injectable, ServiceUnavailableException, UnauthorizedException } from '
 import type { Request, Response } from 'express';
 import type { ConnectorStatus } from '@shared/api.interface';
 import { ConnectorAuthStorageService } from '../connector-auth-storage/connector-auth-storage.service';
-import { connectorPublicUrl, loadConnectorAuthConfig } from './connector-auth.config';
+import { CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID, CONNECTOR_CHATGPT_PUBLIC_CLIENT_ID,
+  connectorPublicUrl, loadConnectorAuthConfig } from './connector-auth.config';
 import { connectorDefaultTimezone } from '../../config/connector-deployment.config';
 import { createConnectorOidc } from './connector-oidc.factory';
 import type { ConnectorOidc } from './connector-oidc.factory';
@@ -36,6 +37,7 @@ export class ConnectorAuthService {
   getStatus(): ConnectorStatus {
     let mcpUrl: string = '';
     let configured: boolean = false;
+    let oauthClientId: 'chatgpt' | 'chatgpt_confidential' = CONNECTOR_CHATGPT_PUBLIC_CLIENT_ID;
     try {
       const publicUrl: string = this.getPublicUrl();
       mcpUrl = `${publicUrl}/mcp`;
@@ -54,11 +56,12 @@ export class ConnectorAuthService {
       // Initializes and validates signing/cookie configuration only; no storage or upstream I/O.
       this.getRuntime();
       configured = true;
+      if (config.chatgptClientSecret !== undefined) oauthClientId = CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID;
     } catch {
       // Readiness is public. Do not expose missing variable names, secret values, or causes.
     }
     return {
-      configured, mcpUrl, oauthClientId: 'chatgpt',
+      configured, mcpUrl, oauthClientId,
       message: configured ? '服务配置已就绪，请从 ChatGPT 发起连接并完成飞书授权。' :
         '服务正在配置中，连接入口将在配置完成后开放。',
     };

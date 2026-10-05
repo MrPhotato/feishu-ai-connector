@@ -292,6 +292,9 @@ export function installConnectorRefreshRetry(
     try {
       const form: Record<string, unknown> = await readForm(ctx);
       if (form.grant_type !== 'refresh_token') { await next(); return; }
+      // Only the original public client uses this short retry exception. Every other
+      // client reaches the provider's own client authentication before any credential use.
+      if (form.client_id !== clientId) { await next(); return; }
       refresh = true;
       ctx.state.connectorRefreshRetryRequest = true;
       const request: RetryRequest = parseRetryRequest(ctx, form, config, clientId, hash);

@@ -20,6 +20,8 @@ export interface ConnectorAuthConfig {
   feishuAppId: string;
   feishuAppSecret: string;
   feishuScopes: string;
+  /** Independent confidential OAuth client credential; never exposed to the browser status API. */
+  chatgptClientSecret?: string;
   signingJwks: { keys: JWK[] };
   cookieKeys: string[];
 }

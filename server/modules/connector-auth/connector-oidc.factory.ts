@@ -5,7 +5,8 @@ import { createLocalJWKSet, jwtVerify } from 'jose';
 import type { JWK, JWTVerifyResult } from 'jose';
 import type { Request, Response } from 'express';
 import { connectorAdapter } from './connector-oidc.adapter';
-import { CONNECTOR_CHATGPT_CALLBACK } from './connector-auth.config';
+import { CONNECTOR_CHATGPT_CALLBACK, CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID,
+  CONNECTOR_CHATGPT_PUBLIC_CLIENT_ID, connectorChatgptClientSecret } from './connector-auth.config';
 import { authNow, authRecord } from './connector-auth.types';
 import { CONNECTOR_CONNECTION_TTL, CONNECTOR_RESOURCE_SCOPES, connectorRefreshConsent } from './connector-refresh.consent';
 import { connectorAuthDiagnostics } from './connector-auth.diagnostics';
@@ -33,10 +34,24 @@ export function createConnectorOidc(
 ): ConnectorOidc {
   const diagnostics: ConnectorAuthDiagnostics = options.diagnostics ?? connectorAuthDiagnostics;
   const client: ClientMetadata = options.testClient || {
-    client_id: 'chatgpt', client_name: 'ChatGPT', redirect_uris: [CONNECTOR_CHATGPT_CALLBACK],
+    client_id: CONNECTOR_CHATGPT_PUBLIC_CLIENT_ID, client_name: 'ChatGPT', redirect_uris: [CONNECTOR_CHATGPT_CALLBACK],
     response_types: ['code'], grant_types: ['authorization_code', 'refresh_token'],
     token_endpoint_auth_method: 'none', application_type: 'web', id_token_signed_response_alg: 'RS256',
   };
+  const confidentialSecret: string | undefined = connectorChatgptClientSecret(
+    config.chatgptClientSecret, config.feishuAppSecret);
+  const clients: ClientMetadata[] = [client];
+  if (confidentialSecret !== undefined) {
+    if (client.client_id === CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID) throw new Error('Duplicate OAuth client');
+    clients.push({
+      client_id: CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID, client_name: 'ChatGPT',
+      redirect_uris: [CONNECTOR_CHATGPT_CALLBACK], response_types: ['code'],
+      grant_types: ['authorization_code', 'refresh_token'], client_secret: confidentialSecret,
+      token_endpoint_auth_method: 'client_secret_post', application_type: 'web',
+      id_token_signed_response_alg: 'RS256',
+    });
+  }
+  const clientIds: Set<string> = new Set(clients.map((entry: ClientMetadata): string => entry.client_id));
   const policy: interactionPolicy.DefaultPolicy = interactionPolicy.base();
   // findAccount already reads live account state during this request. Keep this snapshot
   // inside the request only; no successful authorization is cached across requests.
@@ -58,15 +73,15 @@ export function createConnectorOidc(
   policy.get('consent')?.checks.add(new interactionPolicy.Check(
     'connector_persistent_connection', 'persistent connection requires explicit consent',
     async (ctx: KoaContextWithOIDC): Promise<boolean> => {
-      if (ctx.oidc.client.clientId !== client.client_id || ![...ctx.oidc.requestParamScopes]
+      if (!clientIds.has(ctx.oidc.client.clientId) || ![...ctx.oidc.requestParamScopes]
         .some((scope: string) => CONNECTOR_RESOURCE_SCOPES.includes(scope))) return false;
       return !await connectorRefreshConsent(store, config.resource, ctx.oidc.grant.jti,
-        ctx.oidc.session.accountId, client.client_id, ctx.oidc.requestParamScopes);
+        ctx.oidc.session.accountId, ctx.oidc.client.clientId, ctx.oidc.requestParamScopes);
     },
   ));
   const configuration: Configuration = {
-    adapter: connectorAdapter(connectorRefreshRetryStore(store)), clients: [client], jwks: config.signingJwks,
-    responseTypes: ['code'], subjectTypes: ['public'], clientAuthMethods: ['none'],
+    adapter: connectorAdapter(connectorRefreshRetryStore(store)), clients, jwks: config.signingJwks,
+    responseTypes: ['code'], subjectTypes: ['public'], clientAuthMethods: ['none', 'client_secret_post'],
     scopes: ['openid', 'offline_access'],
     claims: { openid: ['sub'] },
     cookies: {
@@ -80,7 +95,7 @@ export function createConnectorOidc(
       revocation: {
         enabled: true,
         allowedPolicy(_ctx: KoaContextWithOIDC, caller: Client, token: AccessToken | ClientCredentials | RefreshToken): boolean {
-          return caller.clientId === client.client_id && token.clientId === caller.clientId;
+          return clientIds.has(caller.clientId) && token.clientId === caller.clientId;
         },
       },
       rpInitiatedLogout: { enabled: false },
@@ -108,18 +123,25 @@ export function createConnectorOidc(
       },
     },
     async issueRefreshToken(_ctx, caller, source): Promise<boolean> {
-      return caller.clientId === client.client_id && caller.grantTypeAllowed('refresh_token') &&
+      return clientIds.has(caller.clientId) && caller.grantTypeAllowed('refresh_token') &&
         await connectorRefreshConsent(store, config.resource, source.grantId, source.accountId,
           caller.clientId, source.scopes);
     },
     async expiresWithSession(_ctx, source): Promise<boolean> {
-      return source.clientId !== client.client_id || !await connectorRefreshConsent(store, config.resource,
-        source.grantId, source.accountId, client.client_id, source.scopes);
+      return !clientIds.has(source.clientId) || !await connectorRefreshConsent(store, config.resource,
+        source.grantId, source.accountId, source.clientId, source.scopes);
     },
     async rotateRefreshToken(ctx: KoaContextWithOIDC): Promise<boolean> {
       const source: RefreshToken | undefined = ctx.oidc.entities.RefreshToken;
-      if (!source || source.clientId !== client.client_id || !await connectorRefreshConsent(store, config.resource,
-        source.grantId, source.accountId, client.client_id, source.scopes)) throw new errors.InvalidGrant();
+      if (!source || !clientIds.has(source.clientId) || source.clientId !== ctx.oidc.client.clientId ||
+        !await connectorRefreshConsent(store, config.resource, source.grantId, source.accountId,
+          source.clientId, source.scopes)) throw new errors.InvalidGrant();
+      // The provider authenticates this confidential client before reaching this policy.
+      // Its original refresh expiry remains fixed; the public client's rotation is unchanged.
+      if (source.clientId === CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID) {
+        if (ctx.oidc.client.clientAuthMethod !== 'client_secret_post') throw new errors.InvalidClient();
+        return false;
+      }
       return true;
     },
     async findAccount(ctx: KoaContextWithOIDC, id: string): Promise<Account | undefined> {
@@ -199,7 +221,8 @@ export function createConnectorOidc(
         signatureMs = performance.now() - started;
         const { payload } = result;
         if (typeof payload.sub !== 'string' || typeof payload.grant_id !== 'string' ||
-          payload.client_id !== client.client_id || typeof payload.scope !== 'string') throw new Error('Invalid token');
+          typeof payload.client_id !== 'string' || !clientIds.has(payload.client_id) ||
+          typeof payload.scope !== 'string') throw new Error('Invalid token');
         const storageStarted: number = performance.now();
         // Independent reads remain live on every request; no successful authorization is cached.
         const reads: PromiseSettledResult<Record<string, unknown> | undefined>[] = await Promise.allSettled([
@@ -213,7 +236,7 @@ export function createConnectorOidc(
         const account: Record<string, unknown> | undefined = reads[1].value;
         const scopes: string[] = payload.scope.split(' ').filter(Boolean);
         const grantedScopes: unknown = grant && authRecord(grant.resources) ? grant.resources[config.resource] : undefined;
-        if (!grant || grant.accountId !== payload.sub || grant.clientId !== client.client_id ||
+        if (!grant || grant.accountId !== payload.sub || grant.clientId !== payload.client_id ||
           !account || account.revoked === true || !scopes.length ||
           typeof grantedScopes !== 'string' || scopes.some((scope: string) =>
             !['feishu.read', 'feishu.write'].includes(scope) || !grantedScopes.split(' ').includes(scope))) {

@@ -100,10 +100,14 @@ const ConnectorHome: React.FC = () => {
               </div>
               <div className="flex items-baseline justify-between gap-4">
                 <dt className="text-muted-foreground">客户端 ID</dt>
-                <dd className="select-all font-mono text-xs">chatgpt</dd>
+                <dd className="select-all font-mono text-xs">{status?.oauthClientId || '服务就绪后显示'}</dd>
               </div>
             </dl>
-            <p className="mt-5 text-xs leading-6 text-muted-foreground">无需填写客户端密钥。创建后按提示完成飞书授权。</p>
+            <p className="mt-5 text-xs leading-6 text-muted-foreground">
+              {status?.oauthClientId === 'chatgpt_confidential'
+                ? '请填写部署管理员提供的客户端密钥，再按提示完成飞书授权。'
+                : '无需填写客户端密钥。创建后按提示完成飞书授权。'}
+            </p>
             <p className="mt-2 text-xs leading-6 text-muted-foreground">
               高级设置：基础范围留空，关闭 OIDC；默认范围保留 feishu.read 和 feishu.write。
             </p>

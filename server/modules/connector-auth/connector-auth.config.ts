@@ -5,6 +5,20 @@ import type { ConnectorAuthConfig } from './connector-auth.types';
 import { connectorFeishuAppId, connectorPublicUrl } from '../../config/connector-deployment.config';
 
 export const CONNECTOR_CHATGPT_CALLBACK: string = 'https://chatgpt.com/connector_platform_oauth_redirect';
+export const CONNECTOR_CHATGPT_PUBLIC_CLIENT_ID = 'chatgpt' as const;
+export const CONNECTOR_CHATGPT_CONFIDENTIAL_CLIENT_ID = 'chatgpt_confidential' as const;
+
+/** Require a separate canonical base64url encoding of at least 32 random bytes. */
+export function connectorChatgptClientSecret(value: unknown, feishuAppSecret: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{43,128}$/u.test(value) ||
+    value === feishuAppSecret) throw new Error('Invalid confidential client configuration');
+  const bytes: Buffer = Buffer.from(value, 'base64url');
+  if (bytes.length < 32 || bytes.toString('base64url') !== value) {
+    throw new Error('Invalid confidential client configuration');
+  }
+  return value;
+}
 export { connectorPublicUrl };
 
 export function loadConnectorAuthConfig(env: NodeJS.ProcessEnv = process.env): ConnectorAuthConfig {
@@ -15,6 +29,8 @@ export function loadConnectorAuthConfig(env: NodeJS.ProcessEnv = process.env): C
     const cookieKeys: string[] = authStrings(JSON.parse(env.CONNECTOR_COOKIE_KEYS || 'null'));
     const secret: string = env.FEISHU_APP_SECRET || '';
     const scopes: string = (env.CONNECTOR_FEISHU_SCOPES || '').trim();
+    const chatgptClientSecret: string | undefined = connectorChatgptClientSecret(
+      env.CONNECTOR_CHATGPT_CLIENT_SECRET, secret);
     if (!authRecord(signing) || !Array.isArray(signing.keys) || !signing.keys.length ||
       !cookieKeys.length || cookieKeys.some((key: string) => key.length < 32) || !secret || !scopes) {
       throw new Error('Missing configuration');
@@ -28,6 +44,7 @@ export function loadConnectorAuthConfig(env: NodeJS.ProcessEnv = process.env): C
     return {
       publicUrl, issuer: `${publicUrl}/oidc`, resource: `${publicUrl}/mcp`, signingJwks: { keys }, cookieKeys,
       feishuAppId, feishuAppSecret: secret, feishuScopes: scopes,
+      ...(chatgptClientSecret === undefined ? {} : { chatgptClientSecret }),
     };
   } catch {
     throw new ServiceUnavailableException('连接服务尚未完成配置。');

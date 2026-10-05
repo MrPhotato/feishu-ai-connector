@@ -71,6 +71,8 @@ flowchart LR
 5. 以 [配置示例](deployment/instance.example.json) 填写自己的非秘密配置。妙搭环境变量 `CONNECTOR_DEPLOYMENT_CONFIG` 是运行配置的权威来源，本地 `deployment/instance.local.json` 只是被 Git 忽略的调试副本。密钥放在独立服务端环境变量中。
 6. 完成构建、发布和隔离检查，按需要启用 `CONNECTOR_NATIVE_CLI_ENABLED=true`。在客户端连接 `${publicUrl}/mcp`，由使用者本人完成 OAuth，再逐项验证实际任务。
 
+0.4.5 可选启用带独立客户端密钥的 `chatgpt_confidential` OAuth 配置，刷新时验证客户端并重复使用原刷新令牌，保留最长 30 天的固定期限。原有 `chatgpt` 客户端继续使用轮换和有限重试策略；启用配置不会自动迁移现有连接，需重新连接并验证。配置与迁移步骤见 [OAuth 刷新策略](deployment/oauth-refresh.md)。
+
 维护脚本提供只检查模式：
 
 ```sh
