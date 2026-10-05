@@ -40,6 +40,9 @@ const { ConnectorStorageUnavailableError } = loadTs(path.join(root,
   'server/modules/connector-auth-storage/connector-auth-storage.service.ts'));
 const { ServiceUnavailableException, UnauthorizedException } = requireDependency('@nestjs/common');
 const privateMarker = `synthetic-private-${randomBytes(12).toString('hex')}`;
+const actualDateNow = Date.now;
+let clockAdvanceMs = 0;
+Date.now = () => actualDateNow() + clockAdvanceMs;
 const now = () => Math.floor(Date.now() / 1000);
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const config = {
@@ -49,7 +52,7 @@ const config = {
   cookieKeys: ['1'.repeat(64)], feishuAppId: 'synthetic-app', feishuAppSecret: privateMarker,
   feishuScopes: 'offline_access synthetic:read',
 };
-const diagnostics = { token() {}, authorization() {} };
+const diagnostics = { token() {}, authorization() {}, refreshRetry() {} };
 const records = new Map();
 const calls = [];
 let fault;
@@ -57,19 +60,22 @@ let refreshPutFault;
 const refreshPutAttempts = [];
 let refreshReadAttempts = 0;
 const revokedGrants = new Set();
+const leases = new Map();
 let consumed = 0;
 let revoked = 0;
 function key(model, id) { return `${model}:${id}`; }
-function checkFault(operation, model) {
-  calls.push({ operation, model });
+function checkFault(operation, model, id) {
+  calls.push({ operation, model, id });
   if (fault?.operation === operation && fault.model === model &&
-    calls.filter((call) => call.operation === operation && call.model === model).length === fault.occurrence) {
+    (!fault.newRefreshOnly || id === refreshPutAttempts[0]?.id) &&
+    calls.filter((call) => call.operation === operation && call.model === model &&
+      (!fault.newRefreshOnly || call.id === refreshPutAttempts[0]?.id)).length === fault.occurrence) {
     throw Error(privateMarker);
   }
 }
 const store = {
   async get(model, id) {
-    checkFault('get', model);
+    checkFault('get', model, id);
     if (model === 'RefreshToken' && refreshPutFault && id === refreshPutAttempts[0]?.id) {
       refreshReadAttempts++;
       if (refreshPutFault === 'put429-read429' && refreshReadAttempts === 1) {
@@ -112,7 +118,7 @@ const store = {
     const saved = structuredClone(payload);
     const previous = records.get(key(model, id));
     if (previous?.payload.consumed) saved.consumed = previous.payload.consumed;
-    records.set(key(model, id), { payload: saved, expiresAt, uid, grantId });
+    records.set(key(model, id), { model, id, payload: saved, expiresAt, uid, grantId });
     if (recovering && refreshPutAttempts.length === 1 &&
       ['after-once', 'lost-ack-read-outages', 'different-payload', 'consumed'].includes(refreshPutFault)) {
       if (refreshPutFault === 'different-payload') saved.scope = 'synthetic:conflicting-scope';
@@ -124,7 +130,8 @@ const store = {
     checkFault('consume', model);
     const found = records.get(key(model, id));
     if (!found || found.expiresAt <= now() || found.payload.consumed) return false;
-    consumed += 1; found.payload.consumed = now(); return true;
+    if (model === 'RefreshToken') consumed += 1;
+    found.payload.consumed = now(); return true;
   },
   async remove(model, id) { checkFault('remove', model); records.delete(key(model, id)); },
   async revokeGrant(id) {
@@ -137,9 +144,15 @@ const store = {
   async findUid(model, uid) {
     checkFault('findUid', model);
     for (const record of records.values()) {
-      if (record.uid === uid && record.expiresAt > now()) return structuredClone(record.payload);
+      if (record.model === model && record.uid === uid && record.expiresAt > now()) return store.get(model, record.id);
     }
   },
+  async acquireLease(leaseKey, ttlSeconds = 90) {
+    if (leases.get(leaseKey)?.expiresAt > now()) return undefined;
+    const token = randomBytes(32).toString('base64url');
+    leases.set(leaseKey, { token, expiresAt: now() + ttlSeconds }); return token;
+  },
+  async releaseLease(leaseKey, token) { if (leases.get(leaseKey)?.token === token) leases.delete(leaseKey); },
 };
 const oidc = createConnectorOidc(config, store, { diagnostics });
 const service = new ConnectorAuthService(store);
@@ -155,6 +168,7 @@ const tokenUrl = `http://127.0.0.1:${server.address().port}/app/outage-test/oidc
 
 async function fixture() {
   fault = undefined; refreshPutFault = undefined; refreshPutAttempts.length = 0; revokedGrants.clear();
+  clockAdvanceMs = 0; leases.clear();
   refreshReadAttempts = 0; recoveryElapsed = 0; recoverySleeps.length = 0;
   records.clear(); calls.length = 0; consumed = 0; revoked = 0;
   const accountId = 'synthetic-tenant:synthetic-user';
@@ -198,7 +212,7 @@ try {
     assert.ok(records.has(key('Grant', f.grantId)));
     fault = undefined; calls.length = 0;
     const recovered = await refreshRequest(f.refreshToken);
-    assert.equal(recovered.status, 200, 'same unconsumed refresh token works after storage recovery');
+    assert.equal(recovered.status, 200, `${model}:${occurrence}: same unconsumed refresh token works after storage recovery`);
     assert.notEqual(recovered.body.refresh_token, f.refreshToken);
     assert.equal(consumed, 1); assert.equal(revoked, 0);
     checks += 1;
@@ -237,9 +251,10 @@ try {
     assert.equal(recoverySleeps.length, scenario === 'lost-ack-read-outages' ? 3 : scenario === 'put429-read429' ? 2 : 1);
     recoverySleeps.forEach((ms, index) => assert.ok(ms >= 500 * (2 ** index) && ms <= 500 * (2 ** index) + 250,
       'all recovery reads use exponential backoff with bounded jitter'));
-    assert.equal(calls.filter((call) => call.operation === 'consume').length, 1);
+    assert.equal(calls.filter((call) => call.operation === 'consume' && call.model === 'RefreshToken').length, 1);
     assert.equal((await service.verifyMcpAuthorization(recovered.body.access_token)).principal.accountId, f.accountId);
     refreshPutFault = undefined; calls.length = 0;
+    clockAdvanceMs += 61000;
     const next = await refreshRequest(recovered.body.refresh_token);
     assert.equal(next.status, 200, 'next rotation succeeds with recovered token');
     assert.equal(consumed, 2); assert.equal(revoked, 0);
@@ -270,13 +285,17 @@ try {
         'revocation tombstone prevents delayed retry from resurrecting token');
     } else assert.equal(revoked, 0, 'a storage failure alone does not revoke authorization');
     refreshPutFault = undefined;
+    clockAdvanceMs += 31000;
     const replay = await refreshRequest(f.refreshToken);
-    assert.equal(replay.status, 400, 'unrecoverable rotation never reuses consumed predecessor');
+    assert.equal(replay.status, scenario === 'revoked' ? 400 : 503,
+      'uncertain pending rotation never reenters the provider or invents credentials; explicit revocation stays invalid');
+    assert.equal(replay.body.access_token, undefined); assert.equal(replay.body.refresh_token, undefined);
+    assert.equal(consumed, 1);
     checks += 1;
   }
 
   const unreadable = await fixture(); refreshPutFault = 'before-once';
-  fault = { operation: 'get', model: 'RefreshToken', occurrence: 2 };
+  fault = { operation: 'get', model: 'RefreshToken', occurrence: 1, newRefreshOnly: true };
   const unreadableResult = await refreshRequest(unreadable.refreshToken);
   assert.equal(unreadableResult.status, 503);
   assert.equal(refreshPutAttempts.length, 1, 'failed readback cannot trigger blind put retry');
@@ -321,6 +340,7 @@ try {
   await assert.rejects(() => service.verifyMcpAuthorization(accessToken), (error) =>
     error instanceof UnauthorizedException && error.getStatus() === 401);
   records.get(key('FeishuAccount', f.accountId)).payload.revoked = false;
+  clockAdvanceMs += 31000;
   const replay = await refreshRequest(f.refreshToken);
   assert.equal(replay.status, 400); assert.equal(replay.body.error, 'invalid_grant');
   assert.ok(revoked > 0, 'actual refresh replay still revokes the authorization');
@@ -337,6 +357,7 @@ try {
   checks += 1;
   console.log(`PASS: ${checks} auth outage/invalidity scenarios; pre-consumption recovery, bounded exact-payload refresh persistence recovery, lost acknowledgements, no consume retry, OAuth/MCP 503, revocation and replay enforcement.`);
 } finally {
+  Date.now = actualDateNow;
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 }

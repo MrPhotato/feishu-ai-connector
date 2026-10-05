@@ -3,7 +3,7 @@ import { z } from 'zod';
 const STORAGE_MODELS = [
   'AccessToken', 'AuthorizationCode', 'BackchannelAuthenticationRequest',
   'ClientCredentials', 'DeviceCode', 'Grant', 'IdToken', 'Interaction',
-  'RefreshToken', 'ReplayDetection', 'Session', 'PushedAuthorizationRequest',
+  'RefreshToken', 'RefreshRetry', 'RefreshResponse', 'ReplayDetection', 'Session', 'PushedAuthorizationRequest',
   'FeishuAccount', 'FeishuState', 'Consent', 'FeishuLoginState',
   'FeishuLoginResult', 'ConsentCSRF', 'FeishuAction', 'FeishuFile', 'FeishuFileChunk',
 ] as const;

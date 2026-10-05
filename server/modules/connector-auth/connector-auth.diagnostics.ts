@@ -1,11 +1,14 @@
 import { Logger } from '@nestjs/common';
 
 type DiagnosticWriter = (message: string) => void;
+const refreshRetryStages = ['rotation', 'old_retry', 'cooldown', 'cooldown_mismatch', 'lease_busy',
+  'uncertain', 'expired_replay', 'rejected', 'storage_unavailable'] as const;
+export type ConnectorRefreshRetryStage = typeof refreshRetryStages[number];
 const logger: Logger = new Logger('ConnectorAuthDiagnostics');
 const operations: readonly string[] = ['get', 'put', 'consume', 'remove', 'revokeGrant', 'findUid',
   'acquireLease', 'releaseLease', 'getFileChunks', 'putFileChunks'];
 const models: readonly string[] = ['AccessToken', 'AuthorizationCode', 'ClientCredentials', 'DeviceCode',
-  'Grant', 'IdToken', 'Interaction', 'RefreshToken', 'Session', 'ReplayDetection',
+  'Grant', 'IdToken', 'Interaction', 'RefreshToken', 'RefreshRetry', 'RefreshResponse', 'Session', 'ReplayDetection',
   'PushedAuthorizationRequest', 'BackchannelAuthenticationRequest', 'FeishuAccount', 'FeishuState',
   'Consent', 'FeishuLoginState', 'FeishuLoginResult', 'ConsentCSRF', 'FeishuAction', 'FeishuFile', 'FeishuFileChunk'];
 const storageFailureReasons = ['validation', 'config', 'http', 'network_timeout', 'network', 'response_invalid'] as const;
@@ -38,6 +41,12 @@ export class ConnectorAuthDiagnostics {
   authorization(ok: boolean, durationMs: number, signatureMs: number, storageMs: number): void {
     this.emit({ event: 'connector_mcp_authorization', ok, durationMs: milliseconds(durationMs),
       signatureMs: milliseconds(signatureMs), storageMs: milliseconds(storageMs) });
+  }
+
+  refreshRetry(stage: unknown, ok: boolean, durationMs: number): void {
+    this.emit({ event: 'connector_refresh_retry', stage: typeof stage === 'string' &&
+      refreshRetryStages.some((entry): boolean => entry === stage) ? stage : 'rejected',
+    ok, durationMs: milliseconds(durationMs) });
   }
 
   callback(stage: unknown, ok: boolean, durationMs: number, providerOk: unknown, providerCode: unknown,

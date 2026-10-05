@@ -13,6 +13,7 @@ import type { ConnectorAuthDiagnostics } from './connector-auth.diagnostics';
 import type { ConnectorAuthConfig, ConnectorAuthStore, McpPrincipal, VerifiedMcpAuthorization } from './connector-auth.types';
 import { connectorFeishuAccountMatches, connectorFeishuPermissionsComplete } from './connector-feishu.permissions';
 import { ConnectorAuthUnavailableError, connectorAuthStorageOperation } from './connector-auth.unavailable';
+import { connectorRefreshRetryStore, installConnectorRefreshRetry } from './connector-refresh.retry';
 
 export interface ConnectorOidcOptions {
   /** Only test harnesses pass this argument; the production service never supplies it. */
@@ -64,7 +65,7 @@ export function createConnectorOidc(
     },
   ));
   const configuration: Configuration = {
-    adapter: connectorAdapter(store), clients: [client], jwks: config.signingJwks,
+    adapter: connectorAdapter(connectorRefreshRetryStore(store)), clients: [client], jwks: config.signingJwks,
     responseTypes: ['code'], subjectTypes: ['public'], clientAuthMethods: ['none'],
     scopes: ['openid', 'offline_access'],
     claims: { openid: ['sub'] },
@@ -148,10 +149,12 @@ export function createConnectorOidc(
     let completed: boolean = false;
     try { await next(); completed = true; } finally {
       const reply: unknown = ctx.body;
-      diagnostics.token(ctx.oidc.params?.grant_type, completed ? ctx.status : 0, performance.now() - started,
+      diagnostics.token(ctx.oidc?.params?.grant_type ?? (ctx.state.connectorRefreshRetryRequest === true ? 'refresh_token' : undefined),
+        completed ? ctx.status : 0, performance.now() - started,
         authRecord(reply) ? reply.expires_in : undefined);
     }
   });
+  installConnectorRefreshRetry(provider, store, config, client.client_id, diagnostics);
   const callback: ReturnType<Provider['callback']> = provider.callback();
   const publicKeys: JWK[] = config.signingJwks.keys.map((key: JWK): JWK => ({
     kty: key.kty, kid: key.kid, use: 'sig', alg: 'RS256', n: key.n, e: key.e,

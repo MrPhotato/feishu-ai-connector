@@ -17,6 +17,11 @@ assert.deepEqual(callbackDiagnosticRecords, [{ event: 'connector_feishu_callback
   durationMs: 1, accessTokenLength: 0, refreshTokenLength: 0 }], 'callback diagnostics accept no arbitrary provider content');
 new ConnectorAuthDiagnostics(() => { throw Error('synthetic-log-failure'); })
   .callback('complete', true, 1, true, 0, 4097, 4097);
+const retryDiagnosticRecords = [];
+new ConnectorAuthDiagnostics((entry) => retryDiagnosticRecords.push(JSON.parse(entry)))
+  .refreshRetry('synthetic-private-grant-id', false, Number.NaN);
+assert.deepEqual(retryDiagnosticRecords, [{ event: 'connector_refresh_retry', stage: 'rejected', ok: false,
+  durationMs: 0 }], 'refresh diagnostics discard arbitrary identifiers and invalid timings');
 const { ConnectorFeishuFlow } = require('../dist/server/modules/connector-auth/connector-feishu.flow.js');
 const { loadConnectorAuthConfig } = require('../dist/server/modules/connector-auth/connector-auth.config.js');
 const { connectorAdapter } = require('../dist/server/modules/connector-auth/connector-oidc.adapter.js');
@@ -69,11 +74,12 @@ const store = {
       if (value.model === model && value.uid === uid) return this.get(model, value.key);
     }
   },
-  async acquireLease(key) {
-    if (leases.has(key)) return undefined;
-    const token = randomBytes(32).toString('hex'); leases.set(key, token); return token;
+  async acquireLease(key, ttlSeconds = 90) {
+    if (leases.get(key)?.expiresAt > now()) return undefined;
+    const token = randomBytes(32).toString('base64url');
+    leases.set(key, { token, expiresAt: now() + ttlSeconds }); return token;
   },
-  async releaseLease(key, token) { if (leases.get(key) === token) leases.delete(key); },
+  async releaseLease(key, token) { if (leases.get(key)?.token === token) leases.delete(key); },
 };
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const key = { ...privateKey.export({ format: 'jwk' }), alg: 'RS256', use: 'sig', kid: 'synthetic-only' };
@@ -490,8 +496,20 @@ try {
   privateValues.add(renewed.access_token); privateValues.add(renewed.refresh_token);
   assert.notEqual(renewed.refresh_token, tokens.refresh_token);
   assert.equal((await oidc.verifyMcpToken(renewed.access_token)).accountId, 'tenant_protocol:ou_protocol_test_a');
-  const replayRefresh = await tokenRequest({ grant_type: 'refresh_token', client_id: client.client_id,
+  const cachedRefresh = await tokenRequest({ grant_type: 'refresh_token', client_id: client.client_id,
     refresh_token: tokens.refresh_token, resource: config.resource });
+  assert.equal(cachedRefresh.status, 200, 'exact retry traverses the real controller and privacy middleware');
+  assert.match(cachedRefresh.headers.get('cache-control'), /no-store/u);
+  const cachedTokens = await cachedRefresh.json();
+  assert.equal(cachedTokens.access_token, renewed.access_token); assert.equal(cachedTokens.refresh_token, renewed.refresh_token);
+  assert.ok(cachedTokens.expires_in <= renewed.expires_in);
+  const actualReplayNow = Date.now;
+  let replayRefresh;
+  try {
+    Date.now = () => actualReplayNow() + 31000;
+    replayRefresh = await tokenRequest({ grant_type: 'refresh_token', client_id: client.client_id,
+      refresh_token: tokens.refresh_token, resource: config.resource });
+  } finally { Date.now = actualReplayNow; }
   assert.equal(replayRefresh.status, 400);
   await assert.rejects(() => oidc.verifyMcpToken(renewed.access_token), 'refresh replay revokes the grant');
   assert.equal((await tokenRequest(codeParameters(allowed))).status, 400);
@@ -631,7 +649,7 @@ try {
   const actualNow = Date.now;
   let oauthRefreshedReply;
   try {
-    Date.now = () => actualNow() + 60000;
+    Date.now = () => actualNow() + 61000;
     oauthRefreshedReply = await tokenRequest({ grant_type: 'refresh_token', client_id: client.client_id,
       refresh_token: oauthTokens.refresh_token, resource: config.resource });
   } finally { Date.now = actualNow; }

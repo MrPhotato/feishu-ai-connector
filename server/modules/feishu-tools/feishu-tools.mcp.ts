@@ -30,7 +30,7 @@ function createFeishuMcpServer(
   executor: FeishuToolExecutor, principal: McpPrincipal,
   taskExecutor?: FeishuTaskExecutor, nativeExecutor?: FeishuNativeExecutor,
 ): McpServer {
-  const server: McpServer = new McpServer({ name: 'feishu-ai-connector', version: '0.4.3' });
+  const server: McpServer = new McpServer({ name: 'feishu-ai-connector', version: '0.4.4' });
   if (taskExecutor) registerFeishuTaskTools(server, principal, taskExecutor);
   if (nativeExecutor) registerFeishuNativeTools(server, principal, nativeExecutor);
   server.registerTool('feishu_catalog', {
