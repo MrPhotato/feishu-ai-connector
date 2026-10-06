@@ -97,7 +97,15 @@ class FeishuToolExecutor {
       const request: FeishuTaskRequest = parseFeishuTaskRequest(input.task, input.arguments);
       const plan = buildCliTask(request, principal.accountId.slice(principal.accountId.indexOf(':') + 1));
       const account: Record<string, unknown> | FeishuToolResult = await this.cliAccount(principal, plan.mode, plan.scopeGroups);
-      if ('ok' in account) return account as FeishuToolResult;
+      if ('ok' in account) {
+        const denied: FeishuToolResult = account as FeishuToolResult;
+        if (request.task === 'get_user_phone' && denied.error?.code === 'feishu_scope_missing') {
+          return failure('feishu_scope_missing', denied.error.message
+            + '请先核对当前连接器应用是否已开通所列权限，再完成本人增量授权；'
+            + '应用权限开通与用户授权是两步，本次不会撤销现有连接。', denied.error.scopeGroups);
+        }
+        return denied;
+      }
       const action = async (): Promise<FeishuToolResult> => sanitize(await executeCliTask(plan,
         (argv: readonly string[], timeoutMs?: number): Promise<FeishuCliReply> => this.nativeRunner(argv, {
           appId: this.credentials().clientId, accessToken: String(account.access_token),

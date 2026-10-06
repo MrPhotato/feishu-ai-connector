@@ -1,0 +1,10 @@
+{
+  "scopes": {
+    "tenant": [],
+    "user": [
+      "contact:user:search",
+      "contact:contact.base:readonly",
+      "contact:user.phone:readonly"
+    ]
+  }
+}

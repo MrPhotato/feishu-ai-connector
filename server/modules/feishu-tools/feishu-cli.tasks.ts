@@ -1,6 +1,8 @@
 import type { FeishuToolMode, FeishuToolResult } from '@shared/api.interface';
 import type { FeishuTaskRequest } from './feishu-task-tools.contract';
 import type { FeishuCliReply } from './feishu-cli.runner';
+import type { FeishuPhoneLookupRequest } from '@shared/api.interface';
+import { buildContactPhonePlan, executeContactPhone } from './feishu-contact-phone';
 
 interface CliTaskPlan {
   argv: string[];
@@ -9,6 +11,7 @@ interface CliTaskPlan {
   effectiveFilters: Record<string, unknown>;
   documentPages?: number;
   expectedDraftId?: string;
+  phoneLookup?: FeishuPhoneLookupRequest;
 }
 type CliTaskRun = (argv: readonly string[], timeoutMs?: number) => Promise<FeishuCliReply>;
 
@@ -125,6 +128,7 @@ function buildCliTask(request: FeishuTaskRequest, openId: string): CliTaskPlan {
       scopes = a.query || !a.userIds ? [['contact:user:search']] : [['contact:user.base:readonly']];
       break;
     }
+    case 'get_user_phone': return buildContactPhonePlan(request.arguments);
     case 'search_mail': {
       const a = request.arguments;
       argv = ['mail', '+triage', '--mailbox', 'me'];
@@ -193,6 +197,7 @@ function isBareMailTriage(plan: CliTaskPlan, output: Record<string, unknown>): b
 }
 
 async function executeCliTask(plan: CliTaskPlan, run: CliTaskRun): Promise<FeishuToolResult> {
+  if (plan.phoneLookup) return executeContactPhone(plan, run, cliFailure);
   const deadline: number = Date.now() + 30000;
   let reply: FeishuCliReply = await run(plan.argv, Math.max(1, deadline - Date.now()));
   if (reply.exitCode !== 0 || !object(reply.output)) return cliFailure(reply);

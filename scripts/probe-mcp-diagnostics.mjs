@@ -144,9 +144,9 @@ try {
   assert.ok(result.record.durationMs >= 10, 'Includes awaited authentication time');
   step = 'tools_list';
   result = await request('tools/list', {});
-  assert.equal(JSON.parse(result.text).result.tools.length, 17);
+  assert.equal(JSON.parse(result.text).result.tools.length, 18);
   assert.equal(result.record.nativeEnabled, true);
-  assert.equal(result.record.toolCount, 17);
+  assert.equal(result.record.toolCount, 18);
   assert.equal(result.record.method, 'tools_list');
   assert.equal(result.record.failureStage, 'none');
   step = 'notification';

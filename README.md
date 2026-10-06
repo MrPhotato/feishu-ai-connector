@@ -22,11 +22,11 @@ flowchart LR
 
 ## 能力
 
-启用原生 CLI 能力且运行检查通过后，MCP 提供 **17 个入口：10 个常用工具 + 4 个原生入口 + 3 个兼容入口**。未启用或 CLI 不可用时保留 3 个兼容入口；工具可发现也不代表权限和资源均已就绪。
+启用原生 CLI 能力且运行检查通过后，MCP 提供 **18 个入口：11 个常用工具 + 4 个原生入口 + 3 个兼容入口**。未启用或 CLI 不可用时保留 3 个兼容入口；工具可发现也不代表权限和资源均已就绪。
 
 | 分组 | 内容 |
 | --- | --- |
-| 10 个常用工具 | 消息搜索、消息上下文、文档搜索、文档读取、联系人查找、邮件搜索、邮件读取、创建邮件草稿、发送已有草稿、附件下载与文档导出 |
+| 11 个常用工具 | 消息搜索、消息上下文、文档搜索、文档读取、联系人查找、员工手机号查询、邮件搜索、邮件读取、创建邮件草稿、发送已有草稿、附件下载与文档导出 |
 | 4 个原生入口 | 按需读取官方 Skill、查询原生方法目录、执行受控原生读取、执行受控原生写入 |
 | 3 个兼容入口 | `feishu_catalog`、`feishu_read`、`feishu_write`，保留消息、文档、日历、任务等既有 API 适配 |
 
@@ -35,6 +35,12 @@ flowchart LR
 0.4.0 的固定快照中，743 个入口标为 `executable`，75 个仅供发现；个别文件、模板或内联资源参数仍可能被限制。精确条目的 `reasonDetail`、`alternative` 和 `blockedFlags` 会说明限制及替代方式，不能将入口可执行等同于全部参数组合均受支持。
 
 邮件草稿创建与发送分开。发送已有草稿及其他写操作需要当前用户明确意图、对应权限和必要确认；失败或结果不确定时不能盲目重试。
+
+### 员工手机号
+
+`feishu_get_user_phone` 接受姓名/邮箱 `query` 或本应用下明确的 `open_id`（参数 `userId`），二选一。按姓名或邮箱查询时先解析人员；同名或搜索结果不完整时返回候选，不自动选择或批量取号。手机号字段缺失或为空时报告 `phone_not_returned`，不猜测缺权限、隐藏或未填写等原因；明确 `mobile_visible=false` 时返回 `phone_not_visible` 且不展示号码。
+
+工具存在不代表已开通。先确认本部署的应用权限生效，再保留原有 `CONNECTOR_FEISHU_SCOPES` 并追加所需 scope、发布配置，最后由每位使用者重新连接授权；当前没有独立的按工具增量授权链接。不同部署及本地 CLI 应用需分别核对；新权限生效前不扩大全局 scope。接口依据、最小权限清单和启用流程见 [手机号查询](docs/contact-phone.md)。
 
 ### 附件与文件
 
@@ -102,6 +108,7 @@ npm ci
 npm run type:check
 node scripts/test-deployment-config.mjs
 node scripts/test-feishu-task-tools.mjs
+node scripts/test-contact-phone.mjs
 node scripts/probe-cli-task-plans.mjs
 node scripts/probe-feishu-attachments.mjs
 node scripts/test-feishu-cli-files.mjs

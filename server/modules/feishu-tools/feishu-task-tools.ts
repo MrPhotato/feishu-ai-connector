@@ -35,7 +35,15 @@ const TASK_DESCRIPTIONS: Record<FeishuTaskName, TaskToolDescription> = {
   find_people: {
     title: '查找飞书联系人', mode: 'read',
     description: '按姓名/邮箱找 open_id，或用 userIds:["me"] 查本人、批量 ID 回填。返回同名候选；'
-      + '不能擅自挑选同名收件人。此接口不自动翻页，更多候选时应收紧条件。',
+      + '不能擅自挑选同名收件人。此接口不自动翻页，更多候选时应收紧条件。需要员工手机号直接用 get_user_phone。',
+  },
+  get_user_phone: {
+    title: '查询指定飞书联系人的手机号', mode: 'read',
+    description: '按姓名/邮箱或已核对的 open_id 查询手机号；只在用户要求此联系方式时调用。'
+      + '姓名/邮箱由本工具自动解析，无需先调用联系人搜索或操作目录。'
+      + '同名或候选未取完时先返回候选，不擅自选人；返回手机号码时按原文显示，不补全掩码。'
+      + '需要应用通讯录基础权限、手机号字段权限及用户授权。权限不足不等于登录失效；'
+      + '空字段只表示本次未返回，不能推断号码不存在、未填写或被隐藏。',
   },
   search_mail: {
     title: '搜索飞书邮件', mode: 'read',

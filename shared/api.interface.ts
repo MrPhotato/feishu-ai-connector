@@ -83,6 +83,28 @@ export interface FeishuToolResult {
   error?: FeishuToolError;
 }
 
+export interface FeishuPhoneLookupRequest {
+  query?: string;
+  userId?: string;
+}
+
+export interface FeishuPhoneCandidate {
+  openId: string;
+  name?: string;
+  enterpriseEmail?: string;
+  email?: string;
+  department?: string;
+}
+
+export interface FeishuPhoneLookupResult {
+  status: 'phone_returned' | 'phone_not_returned' | 'phone_not_visible'
+    | 'needs_disambiguation' | 'no_matching_user';
+  message: string;
+  user?: { openId: string; name?: string; mobile?: string };
+  candidates?: FeishuPhoneCandidate[];
+  hasMore?: boolean;
+}
+
 export interface FeishuFileLink {
   name: string;
   mimeType: string;

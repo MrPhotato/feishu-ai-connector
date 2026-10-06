@@ -1,6 +1,6 @@
 # 飞书 AI 连接器插件包
 
-本目录是 **0.4.5 通用源模板**，包含四个定制领域 Skills；MCP 列表故意留空，不会连接任何现有企业实例。配置好部署后运行 `node scripts/generate-deployment-plugin.mjs`，安装生成的 `deployment/generated/plugins/feishu/` 副本，不能直接把本目录当成已配置的连接器。部署配置与生成步骤见 [部署说明](../../deployment/README.md)。
+本目录是 **0.4.6 通用源模板**，包含四个定制领域 Skills；MCP 列表故意留空，不会连接任何现有企业实例。配置好部署后运行 `node scripts/generate-deployment-plugin.mjs`，安装生成的 `deployment/generated/plugins/feishu/` 副本，不能直接把本目录当成已配置的连接器。部署配置与生成步骤见 [部署说明](../../deployment/README.md)。
 
 生成或连接 MCP 不会自动安装这四个 Skills；文件创建、编译和协议测试通过也不代表宿主已完成安装或激活。线上能力以实际工具发现和后端验收为准。
 
@@ -13,13 +13,19 @@
 - `skills/`：消息、文档、邮箱和原生长尾能力的策略与证据核验。成功安装此包的兼容宿主才会按名称、描述和当前意图按需加载。
 - `.codex-plugin/plugin.json`、`.mcp.json`：旧客户端兼容清单/配置。可移植宿主以 root manifest、`mcp.json` 和 `skills/` 为准。
 
-当前连接层采用 **10 个常用工具 + 4 个原生工具**，另保留 3 个兼容入口，共 17 个 MCP 工具。常用工具直接提供强参数 schema，不要求先读 catalog。服务端承担链接与 ID 解析、正文补全、有限分页及权限校验。官方 CLI 内置 Skills 可通过 `feishu_skill_read` 按需读取；这是工具返回的官方指导内容，不等于把本目录的四个定制 Skills 安装进 ChatGPT。长尾操作先查单项 native schema，不向工具列表塞全部技能或接口全文。
+当前连接层采用 **11 个常用工具 + 4 个原生工具**，另保留 3 个兼容入口，共 18 个 MCP 工具。常用工具直接提供强参数 schema，不要求先读 catalog。服务端承担链接与 ID 解析、正文补全、有限分页及权限校验。官方 CLI 内置 Skills 可通过 `feishu_skill_read` 按需读取；这是工具返回的官方指导内容，不等于把本目录的四个定制 Skills 安装进 ChatGPT。长尾操作先查单项 native schema，不向工具列表塞全部技能或接口全文。
 
-10 个常用入口：`feishu_search_messages`、`feishu_read_message_context`、`feishu_search_documents`、`feishu_read_document`、`feishu_find_people`、`feishu_search_mail`、`feishu_read_mail`、`feishu_create_mail_draft`、`feishu_send_mail_draft`、`feishu_download_attachment`。它们只在启用固定 CLI 且运行检查通过、注入对应服务端执行器后注册。
+11 个常用入口：`feishu_search_messages`、`feishu_read_message_context`、`feishu_search_documents`、`feishu_read_document`、`feishu_find_people`、`feishu_get_user_phone`、`feishu_search_mail`、`feishu_read_mail`、`feishu_create_mail_draft`、`feishu_send_mail_draft`、`feishu_download_attachment`。它们只在启用固定 CLI 且运行检查通过、注入对应服务端执行器后注册。
 
 原生能力组为 `feishu_skill_read`、`feishu_native_catalog`、`feishu_native_read`、`feishu_native_write`，同样只在注入真实执行器后注册。原生写入须按官方 schema 和风险信息再次检查，不能把任意命令当作原生能力。旧版 36 个操作继续通过兼容入口提供。
 
 原生目录可发现 CLI 1.0.95 的 818 个入口（251 个 API、532 个快捷命令、35 个辅助命令）。这不是 818 项全部可执行或已验收的声明；先查精确条目的 `availability` 与参数 schema。宿主配置与凭据、持续进程、仅 bot 身份等仍受限制。
+
+## 员工手机号
+
+用户明确要查询同事手机号时，直接调用 `feishu_get_user_phone`，无需先查 catalog。传姓名/邮箱 `query` 或已确认属于当前应用的 `open_id`（参数 `userId`），不能同时传两者。同名或搜索不完整时只列候选并请用户确认；不要选首条或推测号码。`phone_not_returned` 表示手机号字段缺失或为空，不能擅自归因；`phone_not_visible` 对应明确的 `mobile_visible=false`，不得展示号码。
+
+部署者需先核对本应用权限生效，再保留原有 `CONNECTOR_FEISHU_SCOPES` 追加所需 scope 并发布配置，之后由使用者重新连接授权；没有独立的按工具增量授权链接。其他应用的审批不能替代本应用开通，新增权限生效前不扩大全局 OAuth 请求。详见 [手机号查询与权限](../../docs/contact-phone.md)。
 
 ## 附件与客户端文件
 

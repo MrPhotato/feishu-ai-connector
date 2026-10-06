@@ -104,6 +104,12 @@ const FEISHU_TASK_SCHEMAS = {
     pageSize: z.number().int().min(1).max(30).default(20),
   }).strict().refine((value): boolean => Boolean(value.query || value.userIds || value.hasChatted
     || value.excludeExternalUsers), '请提供姓名/邮箱、用户 ID 或有效筛选条件'),
+  get_user_phone: z.object({
+    query: z.string().trim().min(1).max(50).optional().describe('明确的姓名或邮箱；同名或未取完候选时会先要求细化。'),
+    userId: z.string().trim().max(128).regex(/^ou_[A-Za-z0-9_-]+$/u).optional()
+      .describe('已核对的目标 open_id；与 query 二选一，不接受 me、URL 或其他 ID 类型。'),
+  }).strict().refine((value): boolean => Boolean(value.query) !== Boolean(value.userId),
+    'query 和 userId 必须且只能提供一个'),
   search_mail: z.object({
     query: z.string().trim().max(50).default('').describe('最多 50 字邮件关键词；配合结构化条件可留空。'),
     from: z.email().optional(), to: z.email().optional(),
@@ -144,6 +150,7 @@ function parseFeishuTaskRequest(task: FeishuTaskName, args: unknown): FeishuTask
     case 'search_documents': return { task, arguments: FEISHU_TASK_SCHEMAS.search_documents.parse(args) };
     case 'read_document': return { task, arguments: FEISHU_TASK_SCHEMAS.read_document.parse(args) };
     case 'find_people': return { task, arguments: FEISHU_TASK_SCHEMAS.find_people.parse(args) };
+    case 'get_user_phone': return { task, arguments: FEISHU_TASK_SCHEMAS.get_user_phone.parse(args) };
     case 'search_mail': return { task, arguments: FEISHU_TASK_SCHEMAS.search_mail.parse(args) };
     case 'read_mail': return { task, arguments: FEISHU_TASK_SCHEMAS.read_mail.parse(args) };
     case 'create_mail_draft': return { task, arguments: FEISHU_TASK_SCHEMAS.create_mail_draft.parse(args) };

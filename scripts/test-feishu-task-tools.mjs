@@ -66,7 +66,7 @@ const check = (condition, message) => { assert.ok(condition, message); assertion
 const runtime = await fixture();
 try {
   const { tools } = await runtime.client.listTools();
-  check(tools.length === 17, '9 common + 5 native + 3 legacy tools');
+  check(tools.length === 18, '10 common + 5 native + 3 legacy tools');
   const commonNames = Object.keys(FEISHU_TASK_SCHEMAS).map((name) => `feishu_${name}`);
   const nativeNames = Object.keys(FEISHU_NATIVE_SCHEMAS).map((name) => `feishu_${name}`);
   for (const name of [...commonNames, ...nativeNames]) {
@@ -97,6 +97,7 @@ try {
     search_documents: { createdByMe: true, timeField: 'created', startTime: '2026-09-01T00:00:00+08:00' },
     read_document: { reference: 'https://test.feishu.cn/wiki/synthetic', scope: 'keyword', keyword: '部署' },
     find_people: { userIds: ['me'] },
+    get_user_phone: { userId: 'ou_synthetic' },
     search_mail: { from: 'alice@example.com', subject: '验收' },
     read_mail: { messageId: 'synthetic-message-id==' },
     create_mail_draft: { to: ['alice@example.com'], cc: ['bob@example.com'],
@@ -135,6 +136,9 @@ try {
     ['read_document', { reference: 'token', scope: 'section' }],
     ['read_document', { reference: 'token', scope: 'range' }],
     ['read_document', { reference: 'token', detail: 'with-ids', format: 'markdown' }],
+    ['get_user_phone', {}], ['get_user_phone', { query: 'Alice', userId: 'ou_synthetic' }],
+    ['get_user_phone', { userId: 'me' }], ['get_user_phone', { userId: 'ou_safe/../other' }],
+    ['get_user_phone', { userId: 'ou_synthetic', method: 'POST' }],
     ['find_people', {}], ['search_mail', { query: 'x'.repeat(51) }],
     ['create_mail_draft', { to: ['not-email'], subject: 'test', body: 'test', userIntent }],
     ['send_mail_draft', { draftId: 'draft', userIntent }],
