@@ -1,10 +1,20 @@
 # 飞书 AI 连接器
 
-把本人有权访问的飞书消息、文档、邮件等能力接入 ChatGPT。后端部署在飞书妙搭，通过远程 MCP 提供工具，复用官方飞书 CLI 和 OpenAPI；部署完成后不依赖个人电脑持续在线。
+面向个人与团队的通用飞书 AI 连接器。在 ChatGPT 等 AI 客户端中查询消息、文档、邮件与联系人，并按指令处理工作；每位用户独立授权自己的飞书账号。同一套代码可供不同组织部署和维护。后端托管在飞书妙搭，通过远程 MCP 复用官方飞书 CLI 和 OpenAPI，不依赖用户电脑持续在线。
 
-*A self-hosted Feishu connector for ChatGPT, using remote MCP, per-user OAuth, and the official Feishu CLI on Miaoda.*
+*A reusable Feishu connector for individuals and teams, connecting ChatGPT through remote MCP, per-user OAuth, and the official Feishu CLI on Miaoda.*
 
-这是可自行部署的源码，不提供公共共享服务。现有维护者或组织的私有实例不向陌生用户开放；使用者需要准备自己的应用、配置和授权。
+## 开始使用
+
+已有可用实例的用户：
+
+1. 从部署管理员获取连接地址或已配置的插件入口。
+2. 在 ChatGPT 中连接，按提示登录并授权自己的飞书账号。
+3. 直接描述任务，例如“查找项目最新文档”或“整理这周的工作并保留来源”。
+
+普通用户无需运行 CLI 或维护服务器。实际可用范围取决于所在实例的应用可用范围、本人授权和资源权限。
+
+部署管理员可以使用本仓库为自己或团队搭建实例，再提供统一入口。本仓库提供开源实现与部署模板；现有组织实例的访问范围由各自管理员设置，开源不代表可直接访问任意已部署服务。新建实例请从下方[部署前提](#部署前提)开始。
 
 ## 架构
 

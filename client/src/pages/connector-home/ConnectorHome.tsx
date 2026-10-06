@@ -58,7 +58,7 @@ const ConnectorHome: React.FC = () => {
           </div>
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">飞书 AI 连接器</h1>
           <p className="mt-5 max-w-md text-base leading-8 text-muted-foreground">
-            在 ChatGPT 中查询消息和文档，并按你的指令处理工作。
+            在 ChatGPT 中查询飞书消息、文档和邮件，并按你的指令处理工作。
           </p>
         </header>
 
@@ -113,7 +113,7 @@ const ConnectorHome: React.FC = () => {
             </p>
           </div>
         </details>
-        <p className="mt-6 text-xs leading-6 text-muted-foreground">访问范围以本人飞书授权为准。</p>
+        <p className="mt-6 text-xs leading-6 text-muted-foreground">每位用户连接自己的飞书账号，访问范围以本人授权和资源权限为准。</p>
       </div>
     </main>
   );

@@ -42,7 +42,7 @@ export async function generateDeploymentPlugin(config, outputDirectory = resolve
   await writeFile(resolve(output, 'README.md'), `# ${deployment.displayName}\n\n`
     + `这是由通用模板生成的 ${portable.version} 部署安装包，包含四个领域 Skills 和已配置的远程 MCP 地址。\n\n`
     + '请仅在支持该插件格式的宿主中安装，并通过 OAuth 授权自己的飞书账号。包内不包含用户凭据。\n\n'
-    + '生成包不代表已经安装或激活；个人网页版 ChatGPT 添加 MCP 连接不会自动加载此包的 Skills。\n', 'utf8');
+    + '生成包不代表已经安装或激活；在 ChatGPT 中添加 MCP 连接不会自动加载此包的 Skills。\n', 'utf8');
   return { outputDirectory: output, name: portable.name, version: portable.version };
 }
 

@@ -1,5 +1,7 @@
 # 部署配置
 
+本连接器使用通用代码和独立实例配置。部署管理员完成一次配置后，可向应用可用范围内的用户提供统一入口，由各用户分别授权自己的飞书账号。以下步骤供部署维护者使用，普通用户无需维护这些文件。
+
 部署维护者使用妙搭服务端环境变量 `CONNECTOR_DEPLOYMENT_CONFIG`（完整六字段 JSON）保存权威配置。本地 `instance.local.json` 只是编辑、生成插件和调试用的副本，不进入 Git。需要选择另一份本地配置时设置 `CONNECTOR_DEPLOYMENT_FILE`；默认配置缺失会报错，不会连接其他人的服务。
 
 已配置的实例可以运行 `node scripts/pull-deployment-config.mjs --app-id <妙搭应用ID>`，只取回这份非秘密 JSON。首次初始化或旧环境尚无此变量时，复制 `instance.example.json` 为 `instance.local.json` 并核实六个字段，不从不完整的旧字段猜测缺失信息。
@@ -37,7 +39,7 @@ node scripts/generate-deployment-plugin.mjs
 
 生成包位于 `deployment/generated/plugins/feishu/`，包含配置后的 MCP 地址、作者和四个 Skills。生成目录不进入 Git。`plugins/feishu/` 是通用源模板，MCP 列表为空，直接使用它不会连接任何企业实例；仅生成后的包有真实连接地址。
 
-生成包不包含部署配置文件或任何密钥。生成成功不代表已安装到 ChatGPT，也不改变个人网页版及工作区的分发限制。
+生成包不包含部署配置文件或任何密钥。生成成功不代表已安装到 ChatGPT；安装与分发仍取决于所用客户端和工作区支持的流程。
 
 ## 检查
 

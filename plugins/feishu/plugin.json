@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "feishu",
   "version": "0.4.6",
-  "description": "通过本人飞书授权检索资料、阅读上下文并执行明确授权的操作。",
+  "description": "面向个人与团队的通用飞书 AI 连接器，在 ChatGPT 等 AI 客户端中查询资料并处理工作。",
   "author": {
     "name": "Connector maintainer"
   },

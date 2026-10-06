@@ -1,15 +1,15 @@
 {
   "name": "feishu",
   "version": "0.4.6",
-  "description": "通过本人飞书授权检索资料、阅读上下文并执行明确授权的操作。",
+  "description": "面向个人与团队的通用飞书 AI 连接器，在 ChatGPT 等 AI 客户端中查询资料并处理工作。",
   "author": {
     "name": "Connector maintainer"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "飞书 AI 连接器模板",
-    "shortDescription": "按本人授权查找飞书资料并处理工作。",
-    "longDescription": "将按领域加载的操作策略与远程 MCP 工具打包。常用检索直接调用；更多能力按需查询官方操作。新版本须完成服务端部署和插件安装验收后使用。",
+    "shortDescription": "连接自己的飞书账号，查询资料并处理工作。",
+    "longDescription": "面向个人与团队的通用飞书 AI 连接器。在 ChatGPT 等 AI 客户端中查询消息、文档、邮件与联系人，并按指令处理工作；每位用户独立授权自己的飞书账号。团队可使用统一部署的连接入口，具体功能以应用权限、本人授权及资源访问权限为准。",
     "developerName": "Connector maintainer",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

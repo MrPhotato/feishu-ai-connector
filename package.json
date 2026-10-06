@@ -1,7 +1,7 @@
 {
   "name": "feishu-ai-connector",
   "version": "0.4.6",
-  "description": "User-authorized Feishu tools for MCP clients, hosted on Miaoda.",
+  "description": "A reusable Feishu connector for individuals and teams, with per-user OAuth and MCP tools hosted on Miaoda.",
   "license": "MIT",
   "repository": {
     "type": "git",
