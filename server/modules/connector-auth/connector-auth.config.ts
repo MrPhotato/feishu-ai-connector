@@ -21,6 +21,21 @@ export function connectorChatgptClientSecret(value: unknown, feishuAppSecret: st
 }
 export { connectorPublicUrl };
 
+/** Keep the primary setting required; the second setting only extends its scope list. */
+function connectorFeishuScopes(env: NodeJS.ProcessEnv): string {
+  const primary: unknown = env.CONNECTOR_FEISHU_SCOPES;
+  const additional: unknown = env.CONNECTOR_FEISHU_ADDITIONAL_SCOPES;
+  if (typeof primary !== 'string' || (additional !== undefined && typeof additional !== 'string')) {
+    throw new Error('Invalid scope configuration');
+  }
+  const parts: string[] = [primary.trim(), typeof additional === 'string' ? additional.trim() : ''];
+  if (!parts[0] || parts.some((part: string): boolean =>
+    part !== '' && !/^[a-zA-Z0-9_:.-]+(?: +[a-zA-Z0-9_:.-]+)*$/u.test(part))) {
+    throw new Error('Invalid scope configuration');
+  }
+  return [...new Set(parts.flatMap((part: string): string[] => part ? part.split(/ +/u) : []))].join(' ');
+}
+
 export function loadConnectorAuthConfig(env: NodeJS.ProcessEnv = process.env): ConnectorAuthConfig {
   try {
     const publicUrl: string = connectorPublicUrl(env);
@@ -28,7 +43,7 @@ export function loadConnectorAuthConfig(env: NodeJS.ProcessEnv = process.env): C
     const signing: unknown = JSON.parse(env.CONNECTOR_SIGNING_JWKS || 'null');
     const cookieKeys: string[] = authStrings(JSON.parse(env.CONNECTOR_COOKIE_KEYS || 'null'));
     const secret: string = env.FEISHU_APP_SECRET || '';
-    const scopes: string = (env.CONNECTOR_FEISHU_SCOPES || '').trim();
+    const scopes: string = connectorFeishuScopes(env);
     const chatgptClientSecret: string | undefined = connectorChatgptClientSecret(
       env.CONNECTOR_CHATGPT_CLIENT_SECRET, secret);
     if (!authRecord(signing) || !Array.isArray(signing.keys) || !signing.keys.length ||

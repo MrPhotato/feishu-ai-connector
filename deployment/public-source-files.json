@@ -273,6 +273,7 @@
     "scripts/run.sh",
     "scripts/test-connector-deployment.mjs",
     "scripts/test-connector-auth-error-pages.mjs",
+    "scripts/test-connector-auth-config.mjs",
     "scripts/test-connector-timezone.mjs",
     "scripts/test-confidential-refresh.mjs",
     "scripts/test-contact-phone-executor.mjs",

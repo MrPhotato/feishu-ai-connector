@@ -30,7 +30,16 @@
 
 运行时优先读取 JSON；只有未设置 JSON 时，才兼容旧的 `CONNECTOR_PUBLIC_URL`、`FEISHU_APP_ID`、`CONNECTOR_DEFAULT_TIMEZONE`。无时区配置时默认 `UTC`；显式请求的日程时区优先。JSON 格式或字段无效时拒绝启动相关能力，不会悄悄回退到旧值。首次迁移保留原时区，以免改变现有业务语义。
 
-下列密钥继续独立维护：`FEISHU_APP_SECRET`、`CONNECTOR_STORAGE_API_KEY`、`CONNECTOR_STORAGE_ENCRYPTION_KEY`、`CONNECTOR_SIGNING_JWKS`、`CONNECTOR_COOKIE_KEYS`。`CONNECTOR_FEISHU_SCOPES` 和 `CONNECTOR_NATIVE_CLI_ENABLED` 仍是独立功能配置；修改六项 JSON 不会替代飞书权限开通或用户授权。
+下列密钥继续独立维护：`FEISHU_APP_SECRET`、`CONNECTOR_STORAGE_API_KEY`、`CONNECTOR_STORAGE_ENCRYPTION_KEY`、`CONNECTOR_SIGNING_JWKS`、`CONNECTOR_COOKIE_KEYS`。OAuth 权限范围和 `CONNECTOR_NATIVE_CLI_ENABLED` 仍是独立功能配置；修改六项 JSON 不会替代飞书权限开通或用户授权。
+
+OAuth 权限使用以空格分隔的权限名配置：
+
+| 环境变量 | 用法 |
+| --- | --- |
+| `CONNECTOR_FEISHU_SCOPES` | 必填，保留现有权限清单 |
+| `CONNECTOR_FEISHU_ADDITIONAL_SCOPES` | 可选，追加权限；未设置或为空时不增加权限 |
+
+妙搭单个环境变量最多保存4096个字符。权限清单超过该长度时，在完整权限名之间拆分到上述两个变量，每个变量保持在平台上限以内。服务按主变量、追加变量的顺序合并并去重；主变量仍不能为空。两段使用相同格式校验，不接受逗号、JSON或权限名之间的换行。不要把尚未开通的权限加入所有用户的授权请求；部署后核对生效范围，再由用户完成增量授权。
 
 ## 维护现有实例
 
@@ -76,6 +85,7 @@ node scripts/configure-cloud-auth.mjs --check
 
 ```sh
 node scripts/test-deployment-config.mjs
+node scripts/test-connector-auth-config.mjs
 node scripts/test-connector-timezone.mjs
 ```
 
