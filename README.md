@@ -113,11 +113,14 @@ node scripts/generate-deployment-plugin.mjs
 
 使用 Node.js 22 或更新版本，并准备妙搭开发环境及相关依赖的访问权限。
 
+主 `/mcp` 接口使用官方 MCP v2 SDK，支持 `2026-07-28` 每请求协议，也保留 `2025-11-25` 及此前版本的初始化流程。两条路径均返回 JSON；每个请求独立验证当前用户授权，不共享用户会话。旧版 SDK 仅保留给兼容性探针与回归客户端。
+
 ```sh
 npm ci
 npm run type:check
 node scripts/test-deployment-config.mjs
 node scripts/test-feishu-task-tools.mjs
+node scripts/probe-mcp-diagnostics.mjs
 node scripts/test-contact-phone.mjs
 node scripts/probe-cli-task-plans.mjs
 node scripts/probe-feishu-attachments.mjs

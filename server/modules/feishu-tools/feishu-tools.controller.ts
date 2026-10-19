@@ -1,6 +1,7 @@
 import { All, Controller, Get, Logger, Post, Req, Res, ServiceUnavailableException } from '@nestjs/common';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createMcpHandler, isLegacyRequest } from '@modelcontextprotocol/server';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from '@modelcontextprotocol/node';
 import type { Request, Response } from 'express';
 import { ConnectorAuthService } from '../connector-auth/connector-auth.service';
 import type { VerifiedMcpAuthorization } from '../connector-auth/connector-auth.types';
@@ -11,7 +12,8 @@ import { FEISHU_TASK_SCHEMAS } from './feishu-task-tools.contract';
 import { FEISHU_NATIVE_SCHEMAS } from './feishu-task-tools.native';
 import { connectorPrivateRequest, connectorPrivateResponse } from '../connector-privacy/connector-privacy.middleware';
 
-type McpRequestMethod = 'initialize' | 'notifications_initialized' | 'tools_list' | 'tools_call' | 'other';
+type McpRequestMethod = 'initialize' | 'notifications_initialized' | 'server_discover'
+  | 'tools_list' | 'tools_call' | 'other';
 type McpFailureStage = 'none' | 'privacy' | 'authentication' | 'executor' | 'native_probe'
   | 'registration' | 'connect' | 'handle_request' | 'close' | 'unsupported_method';
 
@@ -20,6 +22,7 @@ function requestMethod(body: unknown): McpRequestMethod {
   switch (Reflect.get(body, 'method')) {
     case 'initialize': return 'initialize';
     case 'notifications/initialized': return 'notifications_initialized';
+    case 'server/discover': return 'server_discover';
     case 'tools/list': return 'tools_list';
     case 'tools/call': return 'tools_call';
     default: return 'other';
@@ -104,10 +107,27 @@ class FeishuToolsController {
       nativeEnabled = process.env.CONNECTOR_NATIVE_CLI_ENABLED === 'true'
         && (await probeFeishuCli()).available;
       stage = 'registration';
-      const server: McpServer = createFeishuMcpServer(executor, authorization.principal,
+      // The factory closes over this HTTP request's verified identity only.
+      const createServer = (): McpServer => createFeishuMcpServer(executor, authorization.principal,
         nativeEnabled ? executor.executeTask.bind(executor) : undefined,
         nativeEnabled ? executor.executeNative.bind(executor) : undefined);
-      const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
+      const webRequest: globalThis.Request = await toWebRequest(privateRequest, privateRequest.body);
+      // Use the SDK classifier: malformed modern claims must not fall back to legacy.
+      if (!await isLegacyRequest(webRequest, privateRequest.body)) {
+        // Subscriptions always use SSE even in JSON mode; this platform cannot host them.
+        const handler = createMcpHandler(createServer, {
+          legacy: 'reject', responseMode: 'json', maxSubscriptions: 0,
+        });
+        try {
+          stage = 'handle_request';
+          await toNodeHandler(handler)(privateRequest, privateResponse, privateRequest.body);
+          stage = 'close';
+        } finally { await handler.close(); }
+        return;
+      }
+      // The SDK's default legacy fallback uses SSE; this platform requires JSON.
+      const server: McpServer = createServer();
+      const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: undefined, enableJsonResponse: true,
       });
       try {
